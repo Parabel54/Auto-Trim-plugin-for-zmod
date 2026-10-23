@@ -2,16 +2,18 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.2.0 (2026-10-21). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.4.0 (2026-10-21). For printers running Forge-X, use Auto Trim for Forge-X.
 
 Auto Trim sets the first-layer Z offset at the start of every print from a stored calibration, a per-filament adjustment and a bed measurement taken immediately before printing. Babystep corrections made during the first layer are stored and applied to later prints.
 
 ## Features
 
-- One command at print start: cleans the nozzle, maps the bed under the model (KAMP), re-checks the mapped area and sets the Z offset, with a single cool-down and a single reheat.
+- One command at print start: cleans the nozzle, maps the bed under the model (KAMP), re-checks the mapped area, sets the Z offset and draws a purge line, with a single cool-down and a single reheat.
+- Clean probing on the AD5X: the nozzle cools and is wiped at the trash chute, so no filament oozes onto the bed before probing.
 - Per-filament first layers: a shared base offset plus a small adjustment per filament type, picked automatically from the filament type set in the slicer.
 - Learns from babysteps: corrections made during the first layer are saved, so the next print of that filament starts where the last one finished.
 - Bed check across the printed area: re-probes the corners and centre of the mapped area right after mapping, and applies any shift it finds.
+- Purge line outside the print area: placed clear of all parts plus a margin for supports, brims and skirts.
 - Safety stops: the print stops before printing if settings are wrong, the bed check looks wrong, or the offset would be out of range.
 - Detailed console output: every measurement, the offset breakdown and every learned change is printed.
 - Leaves the offset at 0 after every finished print.
@@ -23,7 +25,7 @@ Auto Trim sets the first-layer Z offset at the start of every print from a store
 | Printer | Flashforge AD5X, AD5M or AD5M Pro |
 | Firmware | [zMod](https://github.com/ghzserg/zmod) (built against zMod 1.7.4) |
 | Slicer | OrcaSlicer (any slicer works if it can fill in the same values; the G-code below uses OrcaSlicer placeholders) |
-| Slicer setting | Label objects (exclude objects) turned on |
+| Slicer setting | Label objects (exclude objects) turned on, so the mesh and the purge line can be placed around the parts |
 
 Not for Forge-X: use Auto Trim for Forge-X instead.
 
@@ -48,19 +50,25 @@ Example: a PLA first layer looks slightly high, and the nozzle is lowered by 0.0
 
 No input is needed during these steps. The sequence takes a few minutes.
 
+On the AD5X the nozzle is cleaned at the trash chute, so nothing hot or oozing is held over the bed:
+
 | Step | What the printer does | Why |
 |---|---|---|
 | 1 | Homes, heats the bed and nozzle | Standard zMod start (`START_PRINT`) |
-| 2 | Wipes the hot nozzle on the rubber pad | A clean nozzle measures accurately |
-| 3 | Cools the nozzle to about 120 C | A cool nozzle does not ooze or mark the bed |
-| 4 | Maps the bed under your model | The KAMP mesh: only the area you are printing on |
-| 5 | Re-checks 5 spots of that area | Makes sure the bed has not moved since step 4 |
-| 6 | Sets the Z offset | Saved calibration + filament adjustment + any shift found in step 5 |
-| 7 | Heats the nozzle back up | Ready to print |
-| 8 | Prints | Babystep corrections can be made during the first layer |
-| 9 | Stores babystep corrections, then resets the offset to 0 | Improves the start of the next print |
+| 2 | Purges 10 mm into the trash chute at print temperature | Clears old filament from the nozzle |
+| 3 | Waits at the trash chute while the nozzle cools to 121 C | Any ooze during cooling falls into the chute, not onto the bed |
+| 4 | Wipes the cooled nozzle on the rubber pad | The nozzle is clean and no longer oozing when probing starts |
+| 5 | Maps the bed under your model | The KAMP mesh: only the area you are printing on |
+| 6 | Re-checks 5 spots of that area | Makes sure the bed has not moved since step 5 |
+| 7 | Sets the Z offset | Saved calibration + filament adjustment + any shift found in step 6 |
+| 8 | Returns to the trash chute, heats back up, refills the nozzle and wipes it | The nozzle reaches the print ready to extrude and clean |
+| 9 | Draws a purge line outside the print area | Primes the nozzle where it cannot touch parts, supports, brims or skirts |
+| 10 | Prints | Babystep corrections can be made during the first layer |
+| 11 | Stores babystep corrections, then resets the offset to 0 | Improves the start of the next print |
 
-The nozzle is heated, cooled and reheated once each. This is the minimum, because wiping requires a hot nozzle, probing requires a cool one and printing requires a hot one.
+On the AD5M and AD5M Pro, which have no trash chute, steps 2 to 4 use the standard zMod nozzle clean instead (wipe hot, then cool), and step 8 heats the nozzle above the start of the purge line, outside the print area.
+
+The nozzle is heated, cooled and reheated once each. This is the minimum, because purging requires a hot nozzle, probing requires a cool one and printing requires a hot one. For filaments printed above 230 C, the nozzle cools to 151 C instead of 121 C.
 
 ## Terminology
 
@@ -171,7 +179,23 @@ AUTO_TRIM_SET CALIBRATION=0.23
 
 Cancelled prints: nothing is learned from a cancelled print, so a failed first layer cannot store a bad value. If the correct height was found before cancelling, read the current offset in Fluidd and save it with `AUTO_TRIM_SET CALIBRATION=<value>`.
 
-Auto Trim does not draw a purge line. To prime the nozzle before the first layer, enable a skirt in OrcaSlicer (Process > Others > Skirt loops) or use a purge macro of your own after `AUTO_TRIM_PREPARE`.
+## Purge line
+
+Before printing, Auto Trim draws a short purge line to prime the nozzle. It is placed outside the whole print area, so it cannot run into parts, supports, brims or skirts:
+
+- The print area is every labelled part plus a clearance of 10 mm (`purge_clearance`). Object outlines from the slicer may not include supports, brims or skirts; the clearance covers them.
+- The line goes in the free strip between that area and the edge of the bed, halfway across the strip, centred on the parts. The front is used when it has room. Otherwise the back, left or right side with the most room is used.
+- If the parts plus clearance leave no room on any side, the purge is skipped and the console says so. The print continues.
+- Without labelled objects (Label objects off in OrcaSlicer), the print area is unknown, so the line is drawn along the front edge of the bed.
+
+Before the line is drawn, the filament is pushed back to the nozzle tip, so the line is full from the start. On the AD5X the nozzle is reheated and wiped at the trash chute before moving to the line. On the AD5M and AD5M Pro it is reheated while hovering above the start of the line, so any ooze lands where the line begins, not on the print area.
+
+The console shows where the line goes:
+```
+AUTO TRIM: purge line planned on the front side, outside the print area (parts X80 to 140 Y90 to 130 plus 10.0 mm clearance), from X95.0 Y40.0 to X125.0 Y40.0
+```
+
+To skip the purge line, add `PURGE=0` to the `AUTO_TRIM_PREPARE` line.
 
 ## Ongoing use
 
@@ -206,7 +230,7 @@ AUTO TRIM:   X77.0 Y133.0: probe -1.4526 mesh -1.4566 difference 0.004
 AUTO TRIM:   X143.0 Y133.0: probe -1.4130 mesh -1.4170 difference 0.004
 AUTO TRIM:   X110.0 Y110.0: probe -1.4290 mesh -1.4330 difference 0.004
 AUTO TRIM: KAMP-area check: 5 points, drift (average) 0.004, spread 0.0
-AUTO TRIM: PLA drift this print 0.004 (5 points, spread 0.0); learned 0.002; difference 0.002
+AUTO TRIM: PLA drift this print 0.004 (5 points, spread 0.0), learned 0.002, difference 0.002
 AUTO TRIM: PLA offset = calibration 0.23 (saved) + trim 0.0 + drift 0.004 = 0.234
 ```
 
@@ -240,7 +264,8 @@ Auto Trim stops the print before printing starts, so nothing is damaged. The con
 Notices (lines starting `!!` that do not stop the print):
 - `drift is 0.15 mm away from its learned value`: the bed check found a bigger change than usual for this filament. The print continues. If the plate was swapped or moved, that is expected. If not, check it is clean.
 - `START_PRINT should have SKIP_LEVELING=True`: your Orca start G-code is out of date. The print still works but takes longer. Update it as in Installation step 5.
-- `no labelled objects`: Label objects is off in Orca, so the whole bed gets mapped. Turn it on.
+- `no labelled objects`: Label objects is off in Orca, so the whole bed gets mapped and the purge line goes to the front edge. Turn it on.
+- `no room for a purge line outside the print area`: the parts plus clearance fill the bed. The purge is skipped and the print continues. Lower `purge_clearance` if your prints have no supports, brims or skirts.
 
 ## Default filament adjustments
 
@@ -298,6 +323,8 @@ Add these to the end of the `AUTO_TRIM_PREPARE` line in the OrcaSlicer start G-c
 |---|---|---|
 | `MESH=FULL` | Maps the whole bed instead of only the area under the model. Slower | `MESH=FULL` |
 | `CHECK=ALL` | Re-checks every mesh point instead of 5. Slower, more thorough | `CHECK=ALL` |
+| `PURGE=0` | Skips the purge line | `PURGE=0` |
+| `CLEAN=ZMOD` | Uses the standard zMod nozzle clean instead of the trash-chute clean on the AD5X | `CLEAN=ZMOD` |
 
 Example with a full-bed mesh and a check of every point:
 ```
@@ -344,6 +371,14 @@ In `AUTO_TRIM_PREPARE`:
 |---|---|---|
 | `mesh` | `KAMP` | `KAMP` or `FULL` |
 | `check` | `AREA` | `AREA` (5 points) or `ALL` |
+| `purge` | on | Draw the purge line |
+| `purge_clearance` | 10 mm | Space kept clear around the labelled parts, for supports, brims and skirts |
+| `purge_length` | 30 mm | Length of the purge line |
+| `purge_amount` | 30 mm | Filament extruded for the line |
+| `purge_height` | 0.8 mm | Nozzle height for the line |
+| `purge_flow` | 12 mm3/s | Flow rate for the line |
+| `clean` | `AUTO` | `AUTO` (trash-chute clean on the AD5X, standard zMod clean on the AD5M and AD5M Pro), `TRASH` or `ZMOD` |
+| `restore_tip` | automatic | Filament pushed back to the nozzle tip after reheating, in mm. Automatic: 3 on the AD5X (its clean retracts 3 mm), 0 on the AD5M and AD5M Pro |
 | `max_drift` | 0.3 | Stop if any checked spot is this far from the map |
 | `max_spread` | 0.4 | Stop if the checked spots disagree by more than this |
 | `kamp_slack` | 10 | How much bigger than the model a map can be before it is called a full-bed map |
