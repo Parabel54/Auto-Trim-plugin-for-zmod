@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.4.0 (2026-10-21). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.5.0 (2026-10-21). For printers running Forge-X, use Auto Trim for Forge-X.
 
 Auto Trim sets the first-layer Z offset at the start of every print from a stored calibration, a per-filament adjustment and a bed measurement taken immediately before printing. Babystep corrections made during the first layer are stored and applied to later prints.
 
@@ -11,7 +11,7 @@ Auto Trim sets the first-layer Z offset at the start of every print from a store
 - One command at print start: cleans the nozzle, maps the bed under the model (KAMP), re-checks the mapped area, sets the Z offset and draws a purge line, with a single cool-down and a single reheat.
 - Clean probing on the AD5X: the nozzle cools and is wiped at the trash chute, so no filament oozes onto the bed before probing.
 - Per-filament first layers: a shared base offset plus a small adjustment per filament type, picked automatically from the filament type set in the slicer.
-- Learns from babysteps: corrections made during the first layer are saved, so the next print of that filament starts where the last one finished.
+- Learns from babysteps: corrections made during the first layers are saved as soon as those layers are printed, so the next print of that filament starts where the first layer ended up. Later changes are not learned.
 - Bed check across the printed area: re-probes the corners and centre of the mapped area right after mapping, and applies any shift it finds.
 - Purge line outside the print area: placed clear of all parts plus a margin for supports, brims and skirts.
 - Safety stops: the print stops before printing if settings are wrong, the bed check looks wrong, or the offset would be out of range.
@@ -64,7 +64,7 @@ On the AD5X the nozzle is cleaned at the trash chute, so nothing hot or oozing i
 | 8 | Returns to the trash chute, heats back up, refills the nozzle and wipes it | The nozzle reaches the print ready to extrude and clean |
 | 9 | Draws a purge line outside the print area | Primes the nozzle where it cannot touch parts, supports, brims or skirts |
 | 10 | Prints | Babystep corrections can be made during the first layer |
-| 11 | Stores babystep corrections, then resets the offset to 0 | Improves the start of the next print |
+| 11 | Saves the first-layer babystep corrections when layer 3 starts, and resets the offset to 0 at the end | Improves the start of the next print |
 
 On the AD5M and AD5M Pro, which have no trash chute, steps 2 to 4 use the standard zMod nozzle clean instead (wipe hot, then cool), and step 8 heats the nozzle above the start of the purge line, outside the print area.
 
@@ -164,12 +164,13 @@ AUTO TRIM: PLA offset = calibration 0.25 (default) + trim 0.0 + drift 0.0 = 0.25
 | Thin, see-through lines, rough ridges, nozzle scraping, extruder clicking | Too low | Babystep up |
 | Flat lines that just touch each other, smooth surface | Right | Leave it |
 
-3. Let the print finish. At the end the console shows:
+3. Keep printing. When layer 3 starts, the correction is saved and the console shows:
 ```
+AUTO TRIM: first 2 layers printed (now on layer 3), learning the first-layer offset
 AUTO TRIM: calibration 0.25 -> 0.23 (babysteps -0.02)
 AUTO TRIM: learned PLA drift (first) -> 0.0
-AUTO TRIM: Z offset reset to 0
 ```
+At the end of the print the offset is reset to 0.
 Subsequent prints start at `0.23`.
 
 If the correct offset is already known, set it before the first print:
@@ -177,7 +178,7 @@ If the correct offset is already known, set it before the first print:
 AUTO_TRIM_SET CALIBRATION=0.23
 ```
 
-Cancelled prints: nothing is learned from a cancelled print, so a failed first layer cannot store a bad value. If the correct height was found before cancelling, read the current offset in Fluidd and save it with `AUTO_TRIM_SET CALIBRATION=<value>`.
+Cancelled prints: a print cancelled during the first two layers teaches nothing, so a failed first layer cannot store a bad value. A print cancelled later keeps its first-layer correction, because it was already saved. If the correct height was found before cancelling on the first layers, read the current offset in Fluidd and save it with `AUTO_TRIM_SET CALIBRATION=<value>`.
 
 ## Purge line
 
@@ -199,7 +200,17 @@ To skip the purge line, add `PURGE=0` to the `AUTO_TRIM_PREPARE` line.
 
 ## Ongoing use
 
-No routine action is needed. If a first layer looks wrong, babystep during the first layer and Auto Trim stores the correction.
+No routine action is needed. If a first layer looks wrong, babystep during the first layer and Auto Trim stores the correction once the first two layers are printed.
+
+Only first-layer corrections are learned. If you change the offset later in the print (for example to fix a later layer), that change applies to the rest of this print but is not learned, and the console reports it at the end:
+```
+AUTO TRIM: offset changed by 0.05 after the first layers, not learned (first-layer offset 0.0711 was learned)
+```
+
+When the first layers count as done:
+- If the slicer reports layer numbers, when layer 3 starts. To enable this in OrcaSlicer, add `SET_PRINT_STATS_INFO CURRENT_LAYER={layer_num + 1}` to Printer settings > Machine G-code > Layer change G-code (many printer profiles already have it).
+- Otherwise, when the nozzle first rises above Z 1.0 mm (about layer 5 at 0.2 mm layers). This threshold is above typical first-layer Z-hops.
+- Prints too short to get there are learned at the end instead.
 
 Where babystep corrections are stored:
 
@@ -364,6 +375,13 @@ In `AUTO_TRIM`:
 | `seed_trims` | see table above | Starting adjustment for each filament |
 | `drift_learn_rate` | 0.5 | How far the drift from each print moves the learned value (0.5 = halfway) |
 | `drift_jump` | 0.1 | How far from normal the drift can be before a notice is shown |
+
+In `AUTO_TRIM_LEARN`:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `learn_after_layers` | 2 | First-layer corrections are learned once this many layers are printed (when the slicer reports layer numbers) |
+| `learn_above_z` | 1.0 mm | Otherwise, learned once the nozzle first rises above this height |
 
 In `AUTO_TRIM_PREPARE`:
 
