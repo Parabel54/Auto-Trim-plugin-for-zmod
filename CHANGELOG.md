@@ -3,6 +3,22 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.8.0] - 2026-10-24
+
+### Changed
+- AD5X trash-chute clean: the nozzle is wiped on the rubber pad every 25 C while it cools (`cool_wipe_step`), returning to the chute in between, so ooze is removed in stages.
+- The zMod nozzle pre-clean inside `START_PRINT` is skipped on the AD5X (`zmod_preclean: SKIP`), since Auto Trim cleans the nozzle itself. `KEEP` restores it.
+
+## [3.7.0] - 2026-10-24
+
+### Added
+- `MESH=SAVED`: uses the saved full-bed mesh instead of probing, probes 5 points at the print area corners and centre, and applies the measured shift. Falls back to a fresh KAMP mesh if the bed has changed shape or shifted too far.
+- `MESH=AUTO`: KAMP for small prints, the saved mesh for large ones (`auto_kamp_points`).
+- `PURGE_MACRO=<macro>`: run your own purge routine instead of the built-in line. It receives the planned position outside the print area.
+
+### Changed
+- AD5X trash-chute clean: the nozzle is wiped on the rubber pad right after the purge, while still hot, so the purged strand no longer cools on the nozzle and falls into the print area. It is wiped again after cooling.
+
 ## [3.6.0] - 2026-10-24
 
 ### Changed

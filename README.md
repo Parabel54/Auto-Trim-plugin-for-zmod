@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.6.0 (2026-10-24). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.8.0 (2026-10-24). For printers running Forge-X, use Auto Trim for Forge-X.
 
 Auto Trim sets the first-layer Z offset at the start of every print from a stored calibration, a per-filament adjustment and a bed measurement taken immediately before printing. Babystep corrections made during the first layer are stored and applied to later prints.
 
@@ -54,10 +54,10 @@ On the AD5X the nozzle is cleaned at the trash chute, so nothing hot or oozing i
 
 | Step | What the printer does | Why |
 |---|---|---|
-| 1 | Homes, heats the bed and nozzle | Standard zMod start (`START_PRINT`) |
-| 2 | Purges 10 mm into the trash chute at print temperature | Clears old filament from the nozzle |
-| 3 | Waits at the trash chute while the nozzle cools to 121 C | Any ooze during cooling falls into the chute, not onto the bed |
-| 4 | Wipes the cooled nozzle on the rubber pad | The nozzle is clean and no longer oozing when probing starts |
+| 1 | Homes, heats the bed and nozzle | Standard zMod start (`START_PRINT`). The zMod nozzle pre-clean is skipped, because Auto Trim cleans the nozzle itself in steps 2 to 4 |
+| 2 | Purges 10 mm into the trash chute and wipes the nozzle on the rubber pad while it is still hot | Clears old filament and removes the purged strand before it can cool and fall onto the bed |
+| 3 | Waits at the trash chute while the nozzle cools to 121 C, wiping it on the rubber pad every 25 C (195, 170, 145) and returning to the chute in between | Ooze is removed in stages as it forms, instead of building into one long string |
+| 4 | Wipes the cooled nozzle on the rubber pad a final time | The nozzle is clean and no longer oozing when probing starts |
 | 5 | Maps the bed under your model | The KAMP mesh: only the area you are printing on |
 | 6 | Checks the mesh | It must cover the print and stay within a normal range |
 | 7 | Sets the Z offset | Saved calibration + filament adjustment |
@@ -197,6 +197,39 @@ AUTO TRIM: purge line planned on the front side, outside the print area (parts X
 
 To skip the purge line, add `PURGE=0` to the `AUTO_TRIM_PREPARE` line.
 
+To use your own purge routine instead of the built-in line (for example one that loops back to catch the string some filaments such as PETG leave behind), add `PURGE_MACRO=<your macro>`:
+```
+AUTO_TRIM_PREPARE MATERIAL={filament_type[initial_extruder]} PURGE_MACRO=MY_PURGE
+```
+Your macro runs at the same point as the built-in line: after the reheat, at print temperature, with the Z offset already set. It receives the planned position outside the print area as `X0`, `Y0`, `X1` and `Y1`, which it can use or ignore. If the macro does not exist, the print stops before heating with a clear message.
+
+## Saved mesh instead of probing
+
+For large prints, probing a fresh mesh takes several minutes (about 6.6 seconds per point on an AD5X, so about 5.5 minutes for a full 7 x 7 mesh). `MESH=SAVED` skips it: Auto Trim loads a saved full-bed mesh and probes only 5 points, at the corners and centre of the print area, to measure how far the whole bed has moved since the mesh was saved. That shift is applied to the Z offset.
+
+```
+AUTO TRIM: loaded saved mesh 'auto' instead of probing
+AUTO TRIM: checking 5 points at the print area corners and centre (7x7 mesh)
+AUTO TRIM: KAMP-area check: 5 points, drift (average) 0.03, spread 0.02
+AUTO TRIM: saved mesh matches the bed under this print (spread 0.02 mm), offset corrected by 0.03 mm
+```
+
+If the saved mesh no longer fits the bed, a fresh KAMP mesh is built automatically, still before reheating:
+- the 5 points disagree by more than `saved_max_spread` (0.15 mm): the bed has changed shape since the mesh was saved, or
+- the whole bed has shifted by more than `max_drift` (0.3 mm): usually a different plate.
+
+Setting it up:
+1. Heat the bed to the temperature you normally print at and let it settle for a few minutes. The bed changes shape slightly with temperature.
+2. Run a full bed leveling from the zMod menu or `AUTO_FULL_BED_LEVEL`. zMod saves it as the profile `auto`.
+3. Run `SAVE_CONFIG` so the mesh survives a restart.
+
+Redo this after changing plates or re-levelling the bed screws. `saved_profile` selects a different profile name.
+
+`MESH=AUTO` chooses for you: KAMP when the print needs at most 16 mesh points (`auto_kamp_points`), the saved mesh for larger prints, and KAMP when no saved mesh exists. The console shows which was chosen:
+```
+AUTO TRIM: preparing (SAVED mesh (AUTO: KAMP would need 25 points), TRASH clean, print 220/60 C)
+```
+
 ## Ongoing use
 
 No routine action is needed. If a first layer looks wrong, babystep during the first layer and Auto Trim stores the correction once the first two layers are printed.
@@ -330,9 +363,12 @@ Add these to the end of the `AUTO_TRIM_PREPARE` line in the OrcaSlicer start G-c
 | Add | What it does | Example |
 |---|---|---|
 | `MESH=FULL` | Maps the whole bed instead of only the area under the model. Slower | `MESH=FULL` |
+| `MESH=SAVED` | Uses the saved full-bed mesh and probes only 5 points (see Saved mesh instead of probing) | `MESH=SAVED` |
+| `MESH=AUTO` | KAMP for small prints, the saved mesh for large ones | `MESH=AUTO` |
 | `CHECK=AREA` | Re-probes 5 points of the mapped area after the mesh and applies the drift. About 35 to 40 seconds longer | `CHECK=AREA` |
 | `CHECK=ALL` | Re-probes every mesh point. Slower | `CHECK=ALL` |
 | `PURGE=0` | Skips the purge line | `PURGE=0` |
+| `PURGE_MACRO=<macro>` | Runs your own purge macro instead of the built-in line | `PURGE_MACRO=MY_PURGE` |
 | `CLEAN=ZMOD` | Uses the standard zMod nozzle clean instead of the trash-chute clean on the AD5X | `CLEAN=ZMOD` |
 
 Example with a full-bed mesh and the optional bed check:
@@ -391,16 +427,22 @@ In `AUTO_TRIM_PREPARE`:
 
 | Setting | Default | What it does |
 |---|---|---|
-| `mesh` | `KAMP` | `KAMP` or `FULL` |
+| `mesh` | `KAMP` | `KAMP`, `FULL`, `SAVED` or `AUTO` |
+| `saved_profile` | `auto` | Saved mesh used by `SAVED` and `AUTO` |
+| `saved_max_spread` | 0.15 mm | With the saved mesh: build a fresh KAMP mesh if the 5 points disagree by more than this |
+| `auto_kamp_points` | 16 | With `AUTO`: largest KAMP mesh (in points) before the saved mesh is used instead |
 | `check` | `OFF` | `OFF` (mesh only), `AREA` (re-probe 5 points) or `ALL` (re-probe every point) |
 | `max_mesh_range` | 0.6 mm | Stop if the mesh varies by more than this |
 | `purge` | on | Draw the purge line |
+| `purge_macro` | none | Your own purge macro, used instead of the built-in line |
 | `purge_clearance` | 10 mm | Space kept clear around the labelled parts, for supports, brims and skirts |
 | `purge_length` | 30 mm | Length of the purge line |
 | `purge_amount` | 30 mm | Filament extruded for the line |
 | `purge_height` | 0.8 mm | Nozzle height for the line |
 | `purge_flow` | 12 mm3/s | Flow rate for the line |
 | `clean` | `AUTO` | `AUTO` (trash-chute clean on the AD5X, standard zMod clean on the AD5M and AD5M Pro), `TRASH` or `ZMOD` |
+| `cool_wipe_step` | 25 C | AD5X: wipe on the rubber pad every this many degrees while the nozzle cools. 0 = only after the purge and at probing temperature |
+| `zmod_preclean` | `SKIP` | AD5X: `SKIP` the zMod nozzle pre-clean inside `START_PRINT` (Auto Trim cleans the nozzle itself), or `KEEP` it |
 | `restore_tip` | automatic | Filament pushed back to the nozzle tip after reheating, in mm. Automatic: 3 on the AD5X (its clean retracts 3 mm), 0 on the AD5M and AD5M Pro |
 | `max_drift` | 0.3 | With the check on: stop if any checked spot is this far from the map |
 | `max_spread` | 0.4 | With the check on: stop if the checked spots disagree by more than this |
@@ -409,6 +451,7 @@ In `AUTO_TRIM_PREPARE`:
 
 Notes:
 - Values are stored in the existing zMod `[save_variables]` section. Do not add a second one.
+- On the AD5X, `auto_trim.cfg` replaces the zMod pre-clean macro `_PRINT_CLEAR_NOZZLE`, which zMod calls only from `START_PRINT`. With `zmod_preclean: SKIP` it does nothing; with `KEEP` it runs the original zMod sequence. Because the replacement applies to every print, prints sliced without `AUTO_TRIM_PREPARE` also skip the zMod pre-clean while it is set to `SKIP`.
 - `LOAD_ZOFFSET` can be on or off. Auto Trim sets the offset itself every print. It only matters on the very first print, as a starting point.
 - On multi-colour AD5X prints, the adjustment follows the filament in the first slot used, since that one prints the first layer.
 - Filament names come from the OrcaSlicer filament type, lowercased, with `-` turned into `_` (`PLA-CF` is stored as `pla_cf`).
