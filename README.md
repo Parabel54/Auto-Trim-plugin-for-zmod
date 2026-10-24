@@ -2,17 +2,17 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.5.0 (2026-10-21). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.6.0 (2026-10-24). For printers running Forge-X, use Auto Trim for Forge-X.
 
 Auto Trim sets the first-layer Z offset at the start of every print from a stored calibration, a per-filament adjustment and a bed measurement taken immediately before printing. Babystep corrections made during the first layer are stored and applied to later prints.
 
 ## Features
 
-- One command at print start: cleans the nozzle, maps the bed under the model (KAMP), re-checks the mapped area, sets the Z offset and draws a purge line, with a single cool-down and a single reheat.
+- One command at print start: cleans the nozzle, maps the bed under the model (KAMP), checks the mesh, sets the Z offset and draws a purge line, with a single cool-down and a single reheat.
 - Clean probing on the AD5X: the nozzle cools and is wiped at the trash chute, so no filament oozes onto the bed before probing.
 - Per-filament first layers: a shared base offset plus a small adjustment per filament type, picked automatically from the filament type set in the slicer.
 - Learns from babysteps: corrections made during the first layers are saved as soon as those layers are printed, so the next print of that filament starts where the first layer ended up. Later changes are not learned.
-- Bed check across the printed area: re-probes the corners and centre of the mapped area right after mapping, and applies any shift it finds.
+- The KAMP mesh is the only probing: the mesh is checked for coverage and for an unusual range (a lifted plate or debris), at no extra time. An optional re-probe of the mapped area is available (`CHECK=AREA`).
 - Purge line outside the print area: placed clear of all parts plus a margin for supports, brims and skirts.
 - Safety stops: the print stops before printing if settings are wrong, the bed check looks wrong, or the offset would be out of range.
 - Detailed console output: every measurement, the offset breakdown and every learned change is printed.
@@ -23,7 +23,7 @@ Auto Trim sets the first-layer Z offset at the start of every print from a store
 | | |
 |---|---|
 | Printer | Flashforge AD5X, AD5M or AD5M Pro |
-| Firmware | [zMod](https://github.com/ghzserg/zmod) (built against zMod 1.7.4) |
+| Firmware | [zMod](https://github.com/ghzserg/zmod) 1.7.1 or newer (built against 1.7.4, tested on 1.7.1 with an AD5X) |
 | Slicer | OrcaSlicer (any slicer works if it can fill in the same values; the G-code below uses OrcaSlicer placeholders) |
 | Slicer setting | Label objects (exclude objects) turned on, so the mesh and the purge line can be placed around the parts |
 
@@ -41,7 +41,7 @@ Auto Trim manages the Z offset as follows:
 
 - It stores a base offset for the printer (the calibration).
 - It applies a per-filament adjustment (the trim). PETG, for example, typically needs slightly more clearance than PLA.
-- It re-checks the mapped area immediately before printing and corrects for any shift.
+- It checks the fresh mesh before printing and stops if the plate looks lifted or has debris under it.
 - It records babystep corrections made during the first layer and applies them to later prints.
 
 Example: a PLA first layer looks slightly high, and the nozzle is lowered by 0.02 mm while it prints. Auto Trim stores the correction, and the next PLA print starts 0.02 mm lower.
@@ -59,9 +59,9 @@ On the AD5X the nozzle is cleaned at the trash chute, so nothing hot or oozing i
 | 3 | Waits at the trash chute while the nozzle cools to 121 C | Any ooze during cooling falls into the chute, not onto the bed |
 | 4 | Wipes the cooled nozzle on the rubber pad | The nozzle is clean and no longer oozing when probing starts |
 | 5 | Maps the bed under your model | The KAMP mesh: only the area you are printing on |
-| 6 | Re-checks 5 spots of that area | Makes sure the bed has not moved since step 5 |
-| 7 | Sets the Z offset | Saved calibration + filament adjustment + any shift found in step 6 |
-| 8 | Returns to the trash chute, heats back up, refills the nozzle and wipes it | The nozzle reaches the print ready to extrude and clean |
+| 6 | Checks the mesh | It must cover the print and stay within a normal range |
+| 7 | Sets the Z offset | Saved calibration + filament adjustment |
+| 8 | Returns to the trash chute, heats back up, refills the nozzle and wipes it, then re-zeroes the load cell | The nozzle reaches the print ready to extrude and clean, and the zMod collision protection starts from a fresh zero |
 | 9 | Draws a purge line outside the print area | Primes the nozzle where it cannot touch parts, supports, brims or skirts |
 | 10 | Prints | Babystep corrections can be made during the first layer |
 | 11 | Saves the first-layer babystep corrections when layer 3 starts, and resets the offset to 0 at the end | Improves the start of the next print |
@@ -78,13 +78,13 @@ The nozzle is heated, cooled and reheated once each. This is the minimum, becaus
 | Babystep | A small adjustment of the nozzle height while printing, from Fluidd, Mainsail or the screen | "lower by 0.01" |
 | Calibration | The base offset of the printer, learned from PLA prints | `0.23` |
 | Trim | The difference between a filament and PLA | PETG `+0.025` |
-| Drift | How much the bed moved between mapping and the re-check. Normally almost zero | `0.004` |
+| Drift | How much the bed moved between mapping and an optional re-check (`CHECK=AREA`). 0 when the check is off (the default) | `0.004` |
 | Mesh | The map of the bed shape | A grid of up to 5 x 5 points |
 | KAMP | Mapping only the part of the bed you are printing on | A small part gets a small map |
 
-The final offset is calibration + trim + drift.
+The final offset is calibration + trim (+ drift when the optional check is on).
 
-Example: calibration `0.23` + PETG trim `0.025` + drift `0.004` = `0.259`
+Example: calibration `0.23` + PETG trim `0.025` = `0.255`
 
 ## Installation
 
@@ -150,7 +150,7 @@ Previously sliced files contain the old start code and must be sliced again.
 
 The first print establishes the base offset of the printer. Use PLA and something with a big flat first layer, like a 100 x 100 mm square one layer thick.
 
-1. Start the print. After the bed check the console shows a line such as:
+1. Start the print. After the mesh the console shows a line such as:
 ```
 AUTO TRIM: PLA offset = calibration 0.25 (default) + trim 0.0 + drift 0.0 = 0.25
 ```
@@ -168,7 +168,6 @@ AUTO TRIM: PLA offset = calibration 0.25 (default) + trim 0.0 + drift 0.0 = 0.25
 ```
 AUTO TRIM: first 2 layers printed (now on layer 3), learning the first-layer offset
 AUTO TRIM: calibration 0.25 -> 0.23 (babysteps -0.02)
-AUTO TRIM: learned PLA drift (first) -> 0.0
 ```
 At the end of the print the offset is reset to 0.
 Subsequent prints start at `0.23`.
@@ -228,35 +227,32 @@ Example:
 
 Corrections can be any size, up or down. Negative values are supported (for example a calibration of `-0.05`).
 
-## Bed check output
+## Mesh check output
 
-Before each print, Auto Trim re-measures 5 spots of the mapped area: the four corners and the middle. It compares each one with the map it just made. The console shows all of it:
+The KAMP mesh is the only probing by default. Right after it, Auto Trim checks that it covers the print and that its range is normal, then sets the offset:
 
 ```
 AUTO TRIM: KAMP area X77.0-143.0 Y87.0-133.0 (print X80-140 Y90-130)
-AUTO TRIM: checking 5 points across the KAMP area (3x3 mesh)
+AUTO TRIM: mesh range 0.087 mm over 9 points
+AUTO TRIM: bed check off, using the KAMP mesh only (drift 0)
+AUTO TRIM: PLA offset = calibration 0.23 (saved) + trim 0.0 + drift 0.0 = 0.23
+```
+
+- `KAMP area`: the region that was mapped, i.e. the footprint of the model plus a few millimetres.
+- `mesh range`: the difference between the highest and lowest point of the mesh. A normal bed under a single print area is usually well under 0.3 mm. Above `max_mesh_range` (0.6 mm) the print is stopped, because that usually means a lifted plate or something under it.
+
+### Optional bed check
+
+`CHECK=AREA` on the `AUTO_TRIM_PREPARE` line re-probes 5 points of the mapped area (the four corners and the middle) after the mesh and applies the average difference as drift. `CHECK=ALL` re-probes every mesh point. This adds about 35 to 40 seconds per print. Measured on an AD5X, the difference is usually a steady few hundredths of a millimetre, which the calibration absorbs anyway, so the check is off by default.
+
+```
 AUTO TRIM:   X77.0 Y87.0: probe -1.4342 mesh -1.4382 difference 0.004
-AUTO TRIM:   X143.0 Y87.0: probe -1.3946 mesh -1.3986 difference 0.004
-AUTO TRIM:   X77.0 Y133.0: probe -1.4526 mesh -1.4566 difference 0.004
-AUTO TRIM:   X143.0 Y133.0: probe -1.4130 mesh -1.4170 difference 0.004
-AUTO TRIM:   X110.0 Y110.0: probe -1.4290 mesh -1.4330 difference 0.004
+...
 AUTO TRIM: KAMP-area check: 5 points, drift (average) 0.004, spread 0.0
 AUTO TRIM: PLA drift this print 0.004 (5 points, spread 0.0), learned 0.002, difference 0.002
-AUTO TRIM: PLA offset = calibration 0.23 (saved) + trim 0.0 + drift 0.004 = 0.234
 ```
 
-How to read it:
-- `KAMP area`: the region that was mapped, i.e. the footprint of the model plus a few millimetres.
-- `difference`: how far that point moved since it was mapped. A few thousandths of a millimetre is normal.
-- `drift`: the average of the differences, added to the offset for this print.
-- `spread`: the range between the highest and lowest difference. A value near zero means the area moved evenly, which is expected.
-- `learned` / `difference`: compares the drift on this print with the usual value for this filament. A large change usually means the plate was swapped or moved.
-
-At the end of the print, the learned value is updated:
-```
-AUTO TRIM: learned PLA drift 0.002 -> 0.003 (this print 0.004, difference 0.002)
-```
-The learned drift is used only for comparison and history. It does not change the saved offset; only babystep corrections do. This prevents measurement noise from accumulating over many prints.
+With the check on, each filament keeps a learned drift used for comparison only. If you switch the check off after using it, the first print may start a few hundredths of a millimetre higher than before; one babystep corrects it.
 
 ## Safety stops and notices
 
@@ -265,15 +261,16 @@ Auto Trim stops the print before printing starts, so nothing is damaged. The con
 | Message contains | What it means | What to do |
 |---|---|---|
 | `MESH_TEST must be 0`, `PRINT_LEVELING must be 0` or `DISABLE_PRIMING=1` | A zMod setting is wrong | Run the command from Installation step 3, then `RESTART` |
-| `differs from the fresh mesh by 0.35` | One spot measured very differently seconds after mapping | Make sure the plate is clean and seated flat, then reprint |
-| `check points disagree by 0.46` | The spots do not agree with each other by more than 0.4 mm | Look for something under the plate, or a bent or lifted plate |
+| `the mesh varies by` | The mesh range is above `max_mesh_range` (0.6 mm) | Check the plate is seated flat with nothing under it, then reprint |
+| `differs from the fresh mesh by 0.35` (with `CHECK=AREA`) | One spot measured very differently seconds after mapping | Make sure the plate is clean and seated flat, then reprint |
+| `check points disagree by 0.46` (with `CHECK=AREA`) | The spots do not agree with each other by more than 0.4 mm | Look for something under the plate, or a bent or lifted plate |
 | `outside safe range` | The final offset would be beyond -0.8 / +0.8 mm | Check your numbers with `AUTO_TRIM_STATUS`, fix with `AUTO_TRIM_SET` |
 | `does not cover this print` | The map does not match where your model is | Make sure Label objects is on in Orca and re-slice |
 | `no bed mesh` | Mapping failed | Check the console above for a probing error |
 | `not found. Is this zMod?` | A zMod command is missing | Update zMod, or check you are not on Forge-X |
 
 Notices (lines starting `!!` that do not stop the print):
-- `drift is 0.15 mm away from its learned value`: the bed check found a bigger change than usual for this filament. The print continues. If the plate was swapped or moved, that is expected. If not, check it is clean.
+- `drift is 0.15 mm away from its learned value` (with `CHECK=AREA`): the bed check found a bigger change than usual for this filament. The print continues. If the plate was swapped or moved, that is expected. If not, check it is clean.
 - `START_PRINT should have SKIP_LEVELING=True`: your Orca start G-code is out of date. The print still works but takes longer. Update it as in Installation step 5.
 - `no labelled objects`: Label objects is off in Orca, so the whole bed gets mapped and the purge line goes to the front edge. Turn it on.
 - `no room for a purge line outside the print area`: the parts plus clearance fill the bed. The purge is skipped and the print continues. Lower `purge_clearance` if your prints have no supports, brims or skirts.
@@ -310,7 +307,7 @@ Heat-sensitive plates (PC, some G10 and coated plates) can get small marks from 
 SAVE_VARIABLE VARIABLE=temp_test_min VALUE=110
 SAVE_VARIABLE VARIABLE=temp_test_max VALUE=140
 ```
-(`temp_test_max` is used for filaments printed above 230 C.)
+(`temp_test_max` is used for filaments printed above 230 C.) On the AD5X these settings are used by the Auto Trim trash-chute clean on any zMod version. With the standard zMod clean (AD5M, AD5M Pro, or `CLEAN=ZMOD`), they need zMod 1.7.4 or newer; zMod 1.7.1 always cools to 121 C and 151 C.
 
 Swapping plates: the mesh accounts for the thickness of a different plate automatically. A different surface may still need a different first-layer height (textured plates often print best slightly lower). A babystep correction on a PLA print with the new plate is applied to every filament. When alternating between plates, record the calibration for each plate and set it before printing, e.g. `AUTO_TRIM_SET CALIBRATION=0.21`.
 
@@ -333,13 +330,14 @@ Add these to the end of the `AUTO_TRIM_PREPARE` line in the OrcaSlicer start G-c
 | Add | What it does | Example |
 |---|---|---|
 | `MESH=FULL` | Maps the whole bed instead of only the area under the model. Slower | `MESH=FULL` |
-| `CHECK=ALL` | Re-checks every mesh point instead of 5. Slower, more thorough | `CHECK=ALL` |
+| `CHECK=AREA` | Re-probes 5 points of the mapped area after the mesh and applies the drift. About 35 to 40 seconds longer | `CHECK=AREA` |
+| `CHECK=ALL` | Re-probes every mesh point. Slower | `CHECK=ALL` |
 | `PURGE=0` | Skips the purge line | `PURGE=0` |
 | `CLEAN=ZMOD` | Uses the standard zMod nozzle clean instead of the trash-chute clean on the AD5X | `CLEAN=ZMOD` |
 
-Example with a full-bed mesh and a check of every point:
+Example with a full-bed mesh and the optional bed check:
 ```
-AUTO_TRIM_PREPARE MATERIAL={filament_type[initial_extruder]} MESH=FULL CHECK=ALL
+AUTO_TRIM_PREPARE MATERIAL={filament_type[initial_extruder]} MESH=FULL CHECK=AREA
 ```
 
 Full mesh and KAMP together: KAMP does not refine a full mesh; it builds its own. Running both would probe the same area twice, and only the KAMP mesh would be used. zMod also builds only one mesh per print. Select one with `MESH=`.
@@ -356,7 +354,13 @@ probe_count: 7, 7
 |---|---|---|
 | 5, 5 (default) | 25 | 54 mm |
 | 7, 7 | 49 | 36 mm |
-| 9, 9 | 81 | 27 mm |
+
+7 x 7 is the recommended maximum on the AD5X. A 9 x 9 mesh has been seen to stop the printer with `MCU 'mcu' shutdown: Timer too close`: after probing, Klipper interpolates the mesh into 41 x 41 points (`mesh_pps: 5, 5`), which can overload the small processor in the printer. A smaller `move_check_distance` adds to the load, so do not set it below the stock value. If you want 9 x 9 anyway, reduce the interpolation:
+```
+[bed_mesh]
+probe_count: 9, 9
+mesh_pps: 2, 2
+```
 
 More points take longer: increasing from 25 to 49 roughly doubles the probing time. KAMP also uses the closer spacing, so large models receive more points while small models still need only a few.
 
@@ -388,7 +392,8 @@ In `AUTO_TRIM_PREPARE`:
 | Setting | Default | What it does |
 |---|---|---|
 | `mesh` | `KAMP` | `KAMP` or `FULL` |
-| `check` | `AREA` | `AREA` (5 points) or `ALL` |
+| `check` | `OFF` | `OFF` (mesh only), `AREA` (re-probe 5 points) or `ALL` (re-probe every point) |
+| `max_mesh_range` | 0.6 mm | Stop if the mesh varies by more than this |
 | `purge` | on | Draw the purge line |
 | `purge_clearance` | 10 mm | Space kept clear around the labelled parts, for supports, brims and skirts |
 | `purge_length` | 30 mm | Length of the purge line |
@@ -397,9 +402,10 @@ In `AUTO_TRIM_PREPARE`:
 | `purge_flow` | 12 mm3/s | Flow rate for the line |
 | `clean` | `AUTO` | `AUTO` (trash-chute clean on the AD5X, standard zMod clean on the AD5M and AD5M Pro), `TRASH` or `ZMOD` |
 | `restore_tip` | automatic | Filament pushed back to the nozzle tip after reheating, in mm. Automatic: 3 on the AD5X (its clean retracts 3 mm), 0 on the AD5M and AD5M Pro |
-| `max_drift` | 0.3 | Stop if any checked spot is this far from the map |
-| `max_spread` | 0.4 | Stop if the checked spots disagree by more than this |
+| `max_drift` | 0.3 | With the check on: stop if any checked spot is this far from the map |
+| `max_spread` | 0.4 | With the check on: stop if the checked spots disagree by more than this |
 | `kamp_slack` | 10 | How much bigger than the model a map can be before it is called a full-bed map |
+| `settle_ms` | 1000 | Pause in milliseconds after the mesh, so the printer can finish processing it before motion restarts |
 
 Notes:
 - Values are stored in the existing zMod `[save_variables]` section. Do not add a second one.
