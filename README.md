@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.9.0 (2026-11-02). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.9.1 (2026-11-03). For printers running Forge-X, use Auto Trim for Forge-X.
 
 Auto Trim sets the first-layer Z offset at the start of every print from a stored calibration, a per-filament adjustment and a bed measurement taken immediately before printing. Babystep corrections made during the first layer are stored and applied to later prints.
 
@@ -185,7 +185,7 @@ Before printing, Auto Trim draws a short purge line to prime the nozzle. It is p
 
 - The print area is every labelled part plus a clearance of 10 mm (`purge_clearance`). Object outlines from the slicer may not include supports, brims or skirts; the clearance covers them.
 - The line goes in the free strip between that area and the edge of the bed, halfway across the strip, centred on the parts. The front is used when it has room. Otherwise the back, left or right side with the most room is used.
-- If the parts plus clearance leave no room on any side, the purge is skipped and the console says so. The print continues.
+- If the parts plus clearance leave no room on any side, a stock Flashforge edge line is used instead (AD5X): the zMod `SAVE_ZMOD_DATA CLEAR=` choice first, then the rear line `_CLEAR1` (which loops back to catch strings), the right-side line `_CLEAR4` and the front lines, whichever stays 3 mm clear of the parts (`edge_clearance`). If the parts reach every edge line, the purge is skipped with a notice. `purge_fallback: OFF` skips it instead of using an edge line.
 - Without labelled objects (Label objects off in OrcaSlicer), the print area is unknown, so the line is drawn along the front edge of the bed.
 
 Before the line is drawn, the filament is pushed back to the nozzle tip, so the line is full from the start. On the AD5X the nozzle is reheated and wiped at the trash chute before moving to the line. On the AD5M and AD5M Pro it is reheated while hovering above the start of the line, so any ooze lands where the line begins, not on the print area.
@@ -202,6 +202,8 @@ To use your own purge routine instead of the built-in line (for example one that
 AUTO_TRIM_PREPARE MATERIAL={filament_type[initial_extruder]} PURGE_MACRO=MY_PURGE
 ```
 Your macro runs at the same point as the built-in line: after the reheat, at print temperature, with the Z offset already set. It receives the planned position outside the print area as `X0`, `Y0`, `X1` and `Y1`, which it can use or ignore. If the macro does not exist, the print stops before heating with a clear message.
+
+The zMod stock Flashforge line-clears (`_CLEAR1` to `_CLEAR4`) draw their line outside the build area, so with `PURGE_MACRO=_CLEAR1` (for example) Auto Trim plans nothing inside the bed and the purge runs whatever the parts cover. With your own macro and no room for a planned line, the console shows an information line and your macro runs without coordinates.
 
 ## Saved mesh instead of probing
 
@@ -306,7 +308,7 @@ Notices (lines starting `!!` that do not stop the print):
 - `drift is 0.15 mm away from its learned value` (with `CHECK=AREA`): the bed check found a bigger change than usual for this filament. The print continues. If the plate was swapped or moved, that is expected. If not, check it is clean.
 - `START_PRINT should have SKIP_LEVELING=True`: your Orca start G-code is out of date. The print still works but takes longer. Update it as in Installation step 5.
 - `no labelled objects`: Label objects is off in Orca, so the whole bed gets mapped and the purge line goes to the front edge. Turn it on.
-- `no room for a purge line outside the print area`: the parts plus clearance fill the bed. The purge is skipped and the print continues. Lower `purge_clearance` if your prints have no supports, brims or skirts.
+- `no room for a purge line outside the print area`: shown only when there is no purge macro, the parts plus clearance fill the bed, and the parts also reach every stock edge line, or with `purge_fallback: OFF`. The purge is skipped and the print continues. Lower `purge_clearance` if your prints have no supports, brims or skirts.
 
 Information line: `the mesh ... is smaller than the part outlines` means the part is wider higher up than on its first layer (a flared base, a bowl, an overhang). KAMP meshes the first layer, the slicer outline covers the whole part, and only the first layer needs the mesh, so the print continues.
 
@@ -438,6 +440,8 @@ In `AUTO_TRIM_PREPARE`:
 | `mesh_coverage` | `WARN` | A mesh probed for this print that is smaller than the part outlines (flared or overhanging parts): `WARN` and print on, or `STOP` |
 | `purge` | on | Draw the purge line |
 | `purge_macro` | none | Your own purge macro, used instead of the built-in line |
+| `purge_fallback` | `EDGE` | No room for the built-in line: use a stock edge line (`EDGE`) or skip the purge (`OFF`) |
+| `edge_clearance` | 3 mm | Space an edge line must keep from the parts |
 | `purge_clearance` | 10 mm | Space kept clear around the labelled parts, for supports, brims and skirts |
 | `purge_length` | 30 mm | Length of the purge line |
 | `purge_amount` | 30 mm | Filament extruded for the line |

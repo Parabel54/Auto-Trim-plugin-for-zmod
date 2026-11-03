@@ -3,6 +3,12 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.9.1] - 2026-11-03
+
+### Fixed
+- With a purge macro set and parts filling the bed, Auto Trim showed `!! no room for a purge line ... Purge skipped.` (a Printer Error popup on the touch screen), although the purge macro still ran. The zMod stock line-clears (`_CLEAR1` to `_CLEAR4`) are now recognised as drawing outside the build area, so no line is planned and no message is shown. For your own macro, the message is an information line.
+- With no purge macro and no room for the built-in line, the purge is no longer skipped: a stock Flashforge edge line that stays clear of the parts is used instead (`purge_fallback`, `edge_clearance`).
+
 ## [3.9.0] - 2026-11-02
 
 ### Fixed
