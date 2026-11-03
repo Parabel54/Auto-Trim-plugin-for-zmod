@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.8.0 (2026-10-24). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.9.0 (2026-11-02). For printers running Forge-X, use Auto Trim for Forge-X.
 
 Auto Trim sets the first-layer Z offset at the start of every print from a stored calibration, a per-filament adjustment and a bed measurement taken immediately before printing. Babystep corrections made during the first layer are stored and applied to later prints.
 
@@ -298,7 +298,7 @@ Auto Trim stops the print before printing starts, so nothing is damaged. The con
 | `differs from the fresh mesh by 0.35` (with `CHECK=AREA`) | One spot measured very differently seconds after mapping | Make sure the plate is clean and seated flat, then reprint |
 | `check points disagree by 0.46` (with `CHECK=AREA`) | The spots do not agree with each other by more than 0.4 mm | Look for something under the plate, or a bent or lifted plate |
 | `outside safe range` | The final offset would be beyond -0.8 / +0.8 mm | Check your numbers with `AUTO_TRIM_STATUS`, fix with `AUTO_TRIM_SET` |
-| `does not cover this print` | The map does not match where your model is | Make sure Label objects is on in Orca and re-slice |
+| `does not cover this print` | A saved mesh (`MESH=SAVED`), or any mesh with `mesh_coverage: STOP`, does not reach under the whole print | Make sure Label objects is on in Orca and re-slice, or save a new full-bed mesh |
 | `no bed mesh` | Mapping failed | Check the console above for a probing error |
 | `not found. Is this zMod?` | A zMod command is missing | Update zMod, or check you are not on Forge-X |
 
@@ -307,6 +307,8 @@ Notices (lines starting `!!` that do not stop the print):
 - `START_PRINT should have SKIP_LEVELING=True`: your Orca start G-code is out of date. The print still works but takes longer. Update it as in Installation step 5.
 - `no labelled objects`: Label objects is off in Orca, so the whole bed gets mapped and the purge line goes to the front edge. Turn it on.
 - `no room for a purge line outside the print area`: the parts plus clearance fill the bed. The purge is skipped and the print continues. Lower `purge_clearance` if your prints have no supports, brims or skirts.
+
+Information line: `the mesh ... is smaller than the part outlines` means the part is wider higher up than on its first layer (a flared base, a bowl, an overhang). KAMP meshes the first layer, the slicer outline covers the whole part, and only the first layer needs the mesh, so the print continues.
 
 ## Default filament adjustments
 
@@ -433,6 +435,7 @@ In `AUTO_TRIM_PREPARE`:
 | `auto_kamp_points` | 16 | With `AUTO`: largest KAMP mesh (in points) before the saved mesh is used instead |
 | `check` | `OFF` | `OFF` (mesh only), `AREA` (re-probe 5 points) or `ALL` (re-probe every point) |
 | `max_mesh_range` | 0.6 mm | Stop if the mesh varies by more than this |
+| `mesh_coverage` | `WARN` | A mesh probed for this print that is smaller than the part outlines (flared or overhanging parts): `WARN` and print on, or `STOP` |
 | `purge` | on | Draw the purge line |
 | `purge_macro` | none | Your own purge macro, used instead of the built-in line |
 | `purge_clearance` | 10 mm | Space kept clear around the labelled parts, for supports, brims and skirts |

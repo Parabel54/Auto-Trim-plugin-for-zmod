@@ -3,6 +3,12 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.9.0] - 2026-11-02
+
+### Fixed
+- Parts that are wider above their first layer (a flared base, a bowl, an overhang) stopped every print with `the mesh ... does not cover this print`. KAMP meshes the first layer, while the check compared the mesh with the outline of the whole part from the slicer. For a mesh probed for this print, the difference is now reported and the print continues (`mesh_coverage`, default `WARN`). A saved mesh, or `mesh_coverage: STOP`, still stops the print.
+- The coverage message shows the mesh area rounded to 0.1 mm.
+
 ## [3.8.0] - 2026-10-24
 
 ### Changed
