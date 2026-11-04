@@ -3,6 +3,23 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.9.3] - 2026-11-04
+
+### Fixed
+- Without layer numbers from the slicer, a Z-hop, pause or lift above 1 mm during the first layer could end the first layers early, so later first-layer babysteps were not learned. The nozzle height now only counts while printing (not paused) and when it stays above 1 mm for two checks in a row, and the console says when layer numbers are missing.
+- An error during `AUTO_TRIM_PREPARE` after the offset was set (a heater fault, a failing purge or wipe macro) left the offset applied. The watcher now starts right after the offset is set, so the offset is reset when the print stops.
+- `AUTO_TRIM_SET MATERIAL=PLA TRIM=...` saved a trim that is never used, and the status listed it as learned. The baseline filament is now refused, with a pointer to `CALIBRATION=`.
+- State left over from an earlier print that stopped early (filament, the saved-mesh flag) is cleared at the start of `AUTO_TRIM_PREPARE`.
+- AD5M with the parts filling the bed: the console said an edge line would be used, then that there was none. It now gives one message.
+- Purge and wipe macro names are no longer case-sensitive, and a wipe macro that does not exist stops the print before heating.
+- A start line without `MATERIAL=` now uses the `baseline` filament instead of PLA.
+- Without labelled objects, the purge line was drawn across the front of the bed, where the print could be. A stock edge line is used instead (AD5X), or the purge is skipped with a notice (AD5M).
+
+### Changed
+- The purge line wipe move stays within the printer travel limits.
+- The stock edge line runs inside save and restore of the G-code state, as the zMod purge does.
+- README: the layer change G-code is needed for reliable learning, `CHECK=AREA` mostly measures probe repeatability, the edge line clearance is small on purpose, and `zmod_preclean: KEEP` copies the zMod 1.7 sequence.
+
 ## [3.9.2] - 2026-11-04
 
 ### Fixed
