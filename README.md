@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.9.1 (2026-11-03). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.9.2 (2026-11-04). For printers running Forge-X, use Auto Trim for Forge-X.
 
 Auto Trim sets the first-layer Z offset at the start of every print from a stored calibration, a per-filament adjustment and a bed measurement taken immediately before printing. Babystep corrections made during the first layer are stored and applied to later prints.
 
@@ -395,7 +395,7 @@ probe_count: 7, 7
 | 5, 5 (default) | 25 | 54 mm |
 | 7, 7 | 49 | 36 mm |
 
-7 x 7 is the recommended maximum on the AD5X. A 9 x 9 mesh has been seen to stop the printer with `MCU 'mcu' shutdown: Timer too close`: after probing, Klipper interpolates the mesh into 41 x 41 points (`mesh_pps: 5, 5`), which can overload the small processor in the printer. A smaller `move_check_distance` adds to the load, so do not set it below the stock value. If you want 9 x 9 anyway, reduce the interpolation:
+7 x 7 is the recommended maximum on the AD5X. A 9 x 9 mesh has been seen to stop the printer with `MCU 'mcu' shutdown: Timer too close`: after probing, Klipper interpolates the mesh into 41 x 41 points (`mesh_pps: 5, 5`), which can overload the small processor in the printer. A smaller `move_check_distance` adds to the load, so do not set it below the stock value. The same applies to a saved mesh (`MESH=SAVED`, or `MESH=AUTO` choosing it), because Klipper interpolates it again when it is loaded. The pause after the mesh (`settle_ms`) does not prevent this: the work happens inside the mesh command, before the pause. If you want 9 x 9 anyway, reduce the interpolation:
 ```
 [bed_mesh]
 probe_count: 9, 9
@@ -454,7 +454,7 @@ In `AUTO_TRIM_PREPARE`:
 | `max_drift` | 0.3 | With the check on: stop if any checked spot is this far from the map |
 | `max_spread` | 0.4 | With the check on: stop if the checked spots disagree by more than this |
 | `kamp_slack` | 10 | How much bigger than the model a map can be before it is called a full-bed map |
-| `settle_ms` | 1000 | Pause in milliseconds after the mesh, so the printer can finish processing it before motion restarts |
+| `settle_ms` | 1000 | Pause in milliseconds after the mesh, before the bed check. Does not prevent `Timer too close` on dense meshes (see the mesh size notes) |
 
 Notes:
 - Values are stored in the existing zMod `[save_variables]` section. Do not add a second one.

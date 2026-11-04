@@ -3,6 +3,19 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.9.2] - 2026-11-04
+
+### Fixed
+- First-layer learning could happen before the first layer. Until layer 1 starts, the layer number is 0, so Auto Trim used the nozzle height instead, and the nozzle is above 1 mm after the purge line. If the start took more than a few seconds (an IFS filament load, for example), Auto Trim learned "no babysteps", and corrections made on the first layer were then reported as not learned. The nozzle height is now only used once the nozzle has been on the first layer.
+- `MESH=AUTO` misjudged the mesh size when `probe_count` has a single value (`probe_count: 7`), and always chose KAMP. A single value now counts for both directions.
+- With `MESH=SAVED`, the shift of the saved mesh was learned as drift, mixing it with the drift measured by the bed check, and could give false "drift is ... away from its learned value" notices. The shift is still applied, but no longer learned.
+- A print that was cancelled or stopped kept its Z offset and filament. Both are now cleared and the offset is set back to 0.
+
+### Changed
+- The load cells are zeroed after a short pause (1 s, 2 s after the part fan turns off), so the toolhead and the fan have settled.
+- The `settle_ms` description and the README mesh size notes: the pause does not prevent `Timer too close` on dense meshes, and the 7 x 7 limit applies to saved meshes too.
+- The `purge_flow` description gives the real flow of the default line (about 6 mm3/s).
+
 ## [3.9.1] - 2026-11-03
 
 ### Fixed
