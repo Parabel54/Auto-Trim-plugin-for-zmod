@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.9.4 (2026-11-05). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 4.0.0-beta.5 (2026-11-05). **Beta**: development work, not released. The released version is 3.9.4 on GitHub. For printers running Forge-X, use Auto Trim for Forge-X.
 
 Auto Trim sets the first-layer Z offset at the start of every print from a stored calibration, a per-filament adjustment and a bed measurement taken immediately before printing. Babystep corrections made during the first layer are stored and applied to later prints.
 
@@ -13,7 +13,10 @@ Auto Trim sets the first-layer Z offset at the start of every print from a store
 - Per-filament first layers: a shared base offset plus a small adjustment per filament type, picked automatically from the filament type set in the slicer.
 - Learns from babysteps: corrections made during the first layers are saved as soon as those layers are printed, so the next print of that filament starts where the first layer ended up. Later changes are not learned.
 - The KAMP mesh is the only probing: the mesh is checked for coverage and for an unusual range (a lifted plate or debris), at no extra time. An optional re-probe of the mapped area is available (`CHECK=AREA`).
-- Purge line outside the print area: placed clear of all parts plus a margin for supports, brims and skirts.
+- Purge line outside the print area: placed clear of all parts plus a margin for supports, brims and skirts, and sized from the nozzle.
+- Bed heat soak: measures how long your bed keeps moving after heating, then waits that long before probing when a print starts from a cold bed.
+- First-layer force: reads the bed load cell while the first layer prints, learns what a good first layer feels like for each filament, and can adjust the offset automatically (experimental, opt-in).
+- Colour-change flush test for the AD5X IFS: measures how much purge a colour change really needs.
 - Safety stops: the print stops before printing if settings are wrong, the bed check looks wrong, or the offset would be out of range.
 - Detailed console output: every measurement, the offset breakdown and every learned change is printed.
 - Leaves the offset at 0 after every finished print.
@@ -32,6 +35,38 @@ Not for Forge-X: use Auto Trim for Forge-X instead.
 ## Status
 
 Beta. Built against the zMod 1.7.4 macros and tested extensively in a Klipper simulation of the print start (fresh installs, restarts, every safety stop, KAMP and full meshes, different temperatures and filaments). It has not yet been confirmed across many real printers. Watch the console on your first few prints, and please report anything unexpected (see Reporting problems).
+
+## This beta
+
+This is 4.0.0-beta.5: development work that has not been released yet. The released version is 3.9.4, on GitHub. Use the beta to try the new features before they are released, and report what you find (see Reporting problems).
+
+### New compared with 3.9.4
+
+- Bed heat soak calibration and an automatic soak before probing when a print starts from a cold bed (see Bed heat soak).
+- First-layer force from the bed load cells, measured on every print, with optional automatic adjustment (see First-layer adjustment).
+- An optional add-on for precise load cell readings (see Precise load cell).
+- `AUTO_TRIM_CLOSER` and `AUTO_TRIM_AWAY` for adjusting the first layer live.
+- Nozzle size awareness, and a purge line sized from the nozzle (see Nozzle size).
+- A colour-change flush test for the IFS (see Colour-change flush test).
+- One purge choice, `PURGE=AUTO`, `ZMOD` or `OFF` (see Purge line).
+
+### Upgrading from 3.9.x
+
+1. Replace `auto_trim.cfg` in `mod_data` with the beta file and run `RESTART`. Your calibration and filament trims carry over: they are stored in the same variables.
+2. Check your OrcaSlicer start G-code:
+   - `PURGE_MACRO=<name>` still works. The beta way is to choose the purge in zMod (`SAVE_ZMOD_DATA CLEAR=<name>`) and add `PURGE=ZMOD`.
+   - Add the Layer change G-code from step 5 of Installation, if you have not already.
+3. If you changed settings in `auto_trim.cfg` itself, these have been replaced:
+   - `purge_flow` is now `purge_speed` (mm/s).
+   - `purge_macro` is gone: use `SAVE_ZMOD_DATA CLEAR=<name>` and `purge_mode: "ZMOD"`.
+4. Expect these differences on the first prints:
+   - The built-in purge line is 60 mm long and sized from the nozzle: about 7.5 mm of filament for a 0.4 mm nozzle, instead of 30 mm.
+   - A print that starts from a cold bed waits for the bed to settle before probing. Without a soak calibration that is 3 seconds per degree the bed rose, and the nozzle clean counts towards it. `SOAK=OFF` on the `AUTO_TRIM_PREPARE` line skips it.
+   - The console shows the first-layer force. It only measures: nothing is adjusted unless you switch `force_mode` to `AUTO`.
+
+### Going back to 3.9.4
+
+Put the released `auto_trim.cfg` back in `mod_data` and run `RESTART`. Your calibration and filament trims carry over. The extra values the beta saved (soak times, force references, nozzle size, counts per gram) are ignored by 3.9.4. If you installed the load cell add-on, remove the `[auto_trim_cell]` line from `user.cfg` as well. Undo any start G-code changes from step 2 above, except the Layer change G-code, which does no harm.
 
 ## zMod 1.7.5
 
@@ -68,15 +103,16 @@ On the AD5X the nozzle is cleaned at the trash chute, so nothing hot or oozing i
 | 2 | Purges 10 mm into the trash chute and wipes the nozzle on the rubber pad while it is still hot | Clears old filament and removes the purged strand before it can cool and fall onto the bed |
 | 3 | Waits at the trash chute while the nozzle cools to 121 C, wiping it on the rubber pad every 25 C (195, 170, 145) and returning to the chute in between | Ooze is removed in stages as it forms, instead of building into one long string |
 | 4 | Wipes the cooled nozzle on the rubber pad a final time | The nozzle is clean and no longer oozing when probing starts |
-| 5 | Maps the bed under your model | The KAMP mesh: only the area you are printing on |
-| 6 | Checks the mesh | It must cover the print and stay within a normal range |
-| 7 | Sets the Z offset | Saved calibration + filament adjustment |
-| 8 | Returns to the trash chute, heats back up, refills the nozzle and wipes it, then re-zeroes the load cell | The nozzle reaches the print ready to extrude and clean, and the zMod collision protection starts from a fresh zero |
-| 9 | Draws a purge line outside the print area | Primes the nozzle where it cannot touch parts, supports, brims or skirts |
-| 10 | Prints | Babystep corrections can be made during the first layer |
-| 11 | Saves the first-layer babystep corrections when layer 3 starts, and resets the offset to 0 at the end | Improves the start of the next print |
+| 5 | Waits for the rest of the bed heat soak, if the bed started cold | The plate keeps moving for minutes after it reaches temperature. The nozzle clean counts towards the wait |
+| 6 | Maps the bed under your model | The KAMP mesh: only the area you are printing on |
+| 7 | Checks the mesh | It must cover the print and stay within a normal range |
+| 8 | Sets the Z offset | Saved calibration + filament adjustment |
+| 9 | Returns to the trash chute, heats back up, refills the nozzle and wipes it, then re-zeroes the load cell | The nozzle reaches the print ready to extrude and clean, and the zMod collision protection starts from a fresh zero |
+| 10 | Draws a purge line outside the print area | Primes the nozzle where it cannot touch parts, supports, brims or skirts |
+| 11 | Prints | Babystep corrections can be made during the first layer, and the load cell measures the first-layer force |
+| 12 | Saves the first-layer babystep corrections when layer 3 starts, and resets the offset to 0 at the end | Improves the start of the next print |
 
-On the AD5M and AD5M Pro, which have no trash chute, steps 2 to 4 use the standard zMod nozzle clean instead (wipe hot, then cool), and step 8 heats the nozzle above the start of the purge line, outside the print area.
+On the AD5M and AD5M Pro, which have no trash chute, steps 2 to 4 use the standard zMod nozzle clean instead (wipe hot, then cool), and step 9 heats the nozzle above the start of the purge line, outside the print area.
 
 The nozzle is heated, cooled and reheated once each. This is the minimum, because purging requires a hot nozzle, probing requires a cool one and printing requires a hot one. For filaments printed above 230 C, the nozzle cools to 151 C instead of 121 C.
 
@@ -97,6 +133,17 @@ The final offset is calibration + trim (+ drift when the optional check is on).
 Example: calibration `0.23` + PETG trim `0.025` = `0.255`
 
 ## Installation
+
+### What is in the package
+
+| File | Needed | Where it goes |
+|---|---|---|
+| `auto_trim.cfg` | Yes | `mod_data`, included from `user.cfg` (steps 1 and 2) |
+| `README.md`, `CHANGELOG.md` | No | Documentation, stays on your computer |
+| `auto_trim_cell.py` | Optional | The precise load cell add-on (step 7) |
+| `install_auto_trim_cell.sh` | Optional | Installs the add-on (step 7) |
+
+Steps 1 to 6 are all that is needed. Steps 7 and 8 are optional.
 
 ### 1. Upload the file
 
@@ -119,7 +166,7 @@ SAVE_ZMOD_DATA DISABLE_PRIMING=1 MESH_TEST=0 PRINT_LEVELING=0
 
 | Setting | Set to | Why |
 |---|---|---|
-| `DISABLE_PRIMING` | 1 | Stops zMod drawing its own purge line inside `START_PRINT`, before Auto Trim has set the height |
+| `DISABLE_PRIMING` | 1 | Stops zMod drawing its own purge line inside `START_PRINT`, before Auto Trim has set the height. To keep using the zMod purge, choose `PURGE=ZMOD`: Auto Trim then runs it after setting the height |
 | `MESH_TEST` | 0 | Auto Trim runs its own check. The zMod check would add another heat-and-cool cycle |
 | `PRINT_LEVELING` | 0 | Stops zMod making its own mesh. Auto Trim makes it instead |
 
@@ -145,6 +192,12 @@ AUTO_TRIM_LEARN
 END_PRINT
 ```
 
+Layer change G-code (Printer settings > Machine G-code > Layer change G-code). Add this line, keeping anything already there:
+```
+SET_PRINT_STATS_INFO CURRENT_LAYER={layer_num + 1}
+```
+It lets Auto Trim learn your first-layer corrections exactly when layer 3 starts, and measure the first-layer force on the first layer only. Without it, Auto Trim uses the nozzle height instead (Z 1.0 mm).
+
 Keep the `START_PRINT` and `END_PRINT` lines exactly as they are: zMod checks every print file for them.
 
 Additional OrcaSlicer settings:
@@ -155,6 +208,29 @@ Additional OrcaSlicer settings:
 ### 6. Re-slice
 
 Previously sliced files contain the old start code and must be sliced again.
+
+### 7. Optional: precise load cell add-on
+
+zMod reports the bed load cells in 20 g steps. The add-on reads them to a fraction of a gram, which makes the first-layer force measurement far more useful. Everything else works without it.
+
+1. Upload `auto_trim_cell.py` and `install_auto_trim_cell.sh` to `mod_data`, next to `auto_trim.cfg`.
+2. Over SSH, run `sh /usr/data/config/mod_data/install_auto_trim_cell.sh`. Run it again after every zMod update, before restarting: an update can remove the link, and Klipper then refuses to start while `[auto_trim_cell]` is in `user.cfg` (comment that line out first if you cannot run the installer straight away).
+3. Add `[auto_trim_cell]` to `user.cfg`, below the `[include auto_trim.cfg]` line, and run `FIRMWARE_RESTART`.
+4. `AUTO_TRIM_STATUS` shows `load cell add-on: connected`.
+5. Calibrate it once (step 8).
+
+See Precise load cell for what it does and its commands.
+
+### 8. Optional: one-time calibrations
+
+None of these are needed for the first print. Each can be done once, at any time:
+
+| What | Command | When it helps |
+|---|---|---|
+| Bed heat soak | `AUTO_TRIM_SOAK_CALIBRATE BED=60`, from a cold bed, at the bed temperature you print at (about 20 to 30 minutes) | Replaces the estimated soak at print start with the measured settle time of your bed. Repeat for other bed temperatures you use |
+| Load cell scale | With an empty bed `AUTO_TRIM_CELL_TARE`, place a known weight in the middle, then `AUTO_TRIM_CELL_CALIBRATE GRAMS=<weight>` | Only with the add-on from step 7. Replaces the estimated 43 counts per gram |
+| Nozzle size | `AUTO_TRIM_SET NOZZLE=0.6` | Only if your nozzle is not the one in the printer config |
+| Colour-change flush | `AUTO_TRIM_FLUSH_TEST FROM=1 TO=2`, then `AUTO_TRIM_FLUSH_RESULT DOT=<n>` | Only for multi-colour prints with the IFS |
 
 ## First print calibration
 
@@ -191,29 +267,41 @@ Cancelled prints: a print cancelled during the first two layers teaches nothing,
 
 ## Purge line
 
-Before printing, Auto Trim draws a short purge line to prime the nozzle. It is placed outside the whole print area, so it cannot run into parts, supports, brims or skirts:
+Before printing, the nozzle is primed with a purge line. Choose how with `PURGE=` on the `AUTO_TRIM_PREPARE` line, or `purge_mode` in `auto_trim.cfg`:
+
+| `PURGE=` | Purge |
+|---|---|
+| `AUTO` (default) | Auto Trim line, placed outside the print area (below) |
+| `ZMOD` | The zMod purge, chosen as usual with `SAVE_ZMOD_DATA CLEAR=`: `LINE_PURGE` (KAMP, in front of the parts), `_CLEAR1` to `_CLEAR4` (stock Flashforge lines, `_CLEAR1` runs along the rear edge and loops back to catch strings), or the name of your own macro in `user.cfg` |
+| `OFF` | No purge |
+
+Example, the stock Flashforge rear line through zMod:
+```
+SAVE_ZMOD_DATA CLEAR=_CLEAR1
+AUTO_TRIM_PREPARE MATERIAL={filament_type[initial_extruder]} PURGE=ZMOD
+```
+
+zMod normally purges inside `START_PRINT`, before the height is set, which is why Auto Trim needs `DISABLE_PRIMING=1`. With `PURGE=ZMOD`, Auto Trim runs the same zMod purge itself, the way zMod would, but after the reheat, at print temperature, with the Z offset already set. If the macro named in `CLEAR` does not exist, `LINE_PURGE` is used with a notice, as zMod does.
+
+Whichever is chosen, the filament has been pushed back to the nozzle tip first, so the line is full from the start. On the AD5X the nozzle is reheated and wiped at the trash chute first. On the AD5M and AD5M Pro it is reheated while hovering above the start of the Auto Trim line, so any ooze lands where the line begins, not on the print area.
+
+`PURGE=0` and `PURGE=1` also work (off, and the `purge_mode` setting). Start G-code from older versions with `PURGE_MACRO=<name>` still runs that macro.
+
+### AUTO: the Auto Trim line
+
+The line is placed outside the whole print area, so it cannot run into parts, supports, brims or skirts:
 
 - The print area is every labelled part plus a clearance of 10 mm (`purge_clearance`). Object outlines from the slicer may not include supports, brims or skirts; the clearance covers them.
 - The line goes in the free strip between that area and the edge of the bed, halfway across the strip, centred on the parts. The front is used when it has room. Otherwise the back, left or right side with the most room is used.
-- If the parts plus clearance leave no room on any side, a stock Flashforge edge line is used instead (AD5X): the zMod `SAVE_ZMOD_DATA CLEAR=` choice first, then the rear line `_CLEAR1` (which loops back to catch strings), the right-side line `_CLEAR4` and the front lines, whichever stays 3 mm clear of the parts (`edge_clearance`). If the parts reach every edge line, the purge is skipped with a notice. `purge_fallback: OFF` skips it instead of using an edge line.
+- If no side has room, Auto Trim uses a stock Flashforge edge line instead (AD5X): the zMod `CLEAR` setting first, then the rear line `_CLEAR1`, the right-side line `_CLEAR4` and the front lines, whichever stays 3 mm clear of the parts (`edge_clearance`). If the parts reach every edge line, the purge is skipped with a notice. `purge_fallback: OFF` skips it instead.
 - Without labelled objects (Label objects off in OrcaSlicer), the line is planned outside the first-layer area zMod 1.7.5 finds in the file (Fast KAMP). With older zMod, or when zMod found no area, the print area is unknown and a line across the bed could run under the print: a stock edge line is used instead (AD5X), or the purge is skipped with a notice (AD5M).
 
-Before the line is drawn, the filament is pushed back to the nozzle tip, so the line is full from the start. On the AD5X the nozzle is reheated and wiped at the trash chute before moving to the line. On the AD5M and AD5M Pro it is reheated while hovering above the start of the line, so any ooze lands where the line begins, not on the print area.
+The line is sized from the nozzle: 60 mm long, 2.5 x the nozzle wide and 0.75 x the nozzle high, at 10 mm/s. For a 0.4 mm nozzle that is 1.0 x 0.3 mm and about 7.5 mm of filament. If the line would exceed the extruder limit (`max_extrude_cross_section`), the print stops before heating with the reason.
 
 The console shows where the line goes:
 ```
-AUTO TRIM: purge line planned on the front side, outside the print area (parts X80 to 140 Y90 to 130 plus 10.0 mm clearance), from X95.0 Y40.0 to X125.0 Y40.0
+AUTO TRIM: purge line planned on the front side, outside the print area (parts X80 to 140 Y90 to 130 plus 10.0 mm clearance), from X80.0 Y40.0 to X140.0 Y40.0
 ```
-
-To skip the purge line, add `PURGE=0` to the `AUTO_TRIM_PREPARE` line.
-
-To use your own purge routine instead of the built-in line (for example one that loops back to catch the string some filaments such as PETG leave behind), add `PURGE_MACRO=<your macro>`:
-```
-AUTO_TRIM_PREPARE MATERIAL={filament_type[initial_extruder]} PURGE_MACRO=MY_PURGE
-```
-Your macro runs at the same point as the built-in line: after the reheat, at print temperature, with the Z offset already set. It receives the planned position outside the print area as `X0`, `Y0`, `X1` and `Y1`, which it can use or ignore. If the macro does not exist, the print stops before heating with a clear message.
-
-The zMod stock Flashforge line-clears (`_CLEAR1` to `_CLEAR4`) draw their line outside the build area, so with `PURGE_MACRO=_CLEAR1` (for example) Auto Trim plans nothing inside the bed and the purge runs whatever the parts cover. With your own macro and no room for a planned line, the console shows an information line and your macro runs without coordinates.
 
 ## Saved mesh instead of probing
 
@@ -242,6 +330,131 @@ Redo this after changing plates or re-levelling the bed screws. `saved_profile` 
 AUTO TRIM: preparing (SAVED mesh (AUTO: KAMP would need 25 points), TRASH clean, print 220/60 C)
 ```
 
+## Bed heat soak
+
+After the bed sensor reaches its temperature, the plate keeps warming and changing shape for several minutes. A bed probed too early is measured while it is still moving. Measured on an AD5X at 60 C, the centre moved 0.16 mm and settled after about 5 minutes, and one corner kept creeping for about 13.
+
+### Calibrating
+
+Run once per bed temperature you print at, starting from a cold bed (below 40 C):
+```
+AUTO_TRIM_SOAK_CALIBRATE BED=60
+```
+The printer homes, holds the nozzle at probing temperature for 5 minutes (the hot end also keeps growing after its sensor reads the target), heats the bed, then probes the centre and four points 30 mm in from the corners every minute. It stops when every point has stayed within 0.02 mm for 4 minutes, or after 25 minutes, and saves the result:
+```
+AUTO TRIM: bed soak at 60 C: the centre moved -0.160 mm and settled after 180 s, the corners moved up to 0.098 mm more or less than the centre and the slowest settled after 300 s. Prints now soak up to 180 s after the bed is hot. Heaters off.
+```
+Options: `POINTS=1` (centre only, faster), `INTERVAL`, `STABLE`, `WINDOW`, `MAX`, `NOZZLE`, `NOZZLE_SOAK`, and `FORCE=1` to start from a warm bed. `AUTO_TRIM_SOAK_ABORT` stops a running calibration between probing rounds, with heaters off and nothing saved.
+
+### At print start
+
+When a print starts from a cold bed, Auto Trim waits for the calibrated settle time before probing. The nozzle clean already takes several minutes and counts towards it, so often there is little or nothing left to wait:
+```
+AUTO TRIM: bed heat soak 285 s (calibrated at 60 C, bed started at 22 C), 230 s covered by the nozzle clean, waiting 55 s
+```
+- A smaller temperature rise than the calibration soaks proportionally less. A hotter bed than any calibration soaks longer, up to twice the calibrated time.
+- Without a calibration: 3 seconds per degree the bed rose (`soak_per_degree`).
+- A bed that was already within 5 C of the target needs no soak, for example back-to-back prints. The starting temperature is read while the printer is idle, so a bed preheated from the screen just before the print also counts as hot, although the plate has not soaked: start from a cold bed, or wait a few minutes after preheating.
+- Never more than 10 minutes (`soak_max`). `SOAK=OFF` on the `AUTO_TRIM_PREPARE` line skips it, and `SOAK=<seconds>` sets it for one print.
+
+## First-layer adjustment
+
+### Live adjustment
+
+While the first layer prints, these move the nozzle in small steps. They can be added as buttons in Fluidd or Mainsail:
+```
+AUTO_TRIM_CLOSER          (lower by 0.01 mm, more squish)
+AUTO_TRIM_AWAY STEP=0.02  (raise by 0.02 mm)
+```
+The console shows the offset and whether the change will be learned (before layer 3) or not (after it).
+
+### First-layer force and automatic correction (experimental)
+
+The AD5X bed sits on load cells. While the first layer prints, Auto Trim reads them once a second. Readings at first-layer height where the nozzle presses on the bed are judged in groups of 8 (`force_window`), by their median, so single spikes do not count:
+```
+AUTO TRIM: first-layer force 60.0 g (4 windows, precise load cell), target 60.0
+```
+
+With `force_mode: LEARN` (the default) the force is only measured and reported. With `force_mode: AUTO`, Auto Trim also corrects the offset towards a target force during the first layer. That needs three things:
+
+1. The load cell add-on (Installation step 7). The board alone reports in 20 g steps, too coarse to steer by.
+2. The first-layer settings on the start line, so a target is only used for the settings it was measured with (another layer height, line width or speed gives a different force):
+   ```
+   AUTO_TRIM_PREPARE MATERIAL={filament_type[initial_extruder]} FL_HEIGHT=[initial_layer_print_height] FL_WIDTH=[initial_layer_line_width] FL_SPEED=[initial_layer_speed]
+   ```
+3. A target force and a gain for those settings, from the calibration stripes below.
+
+**Finding the target: calibration stripes.** With the bed cold or warm, not during a print, run the stripes with your print temperatures and the first-layer height, line width and speed of your slicer profile:
+```
+AUTO_TRIM_FORCE_SWEEP MATERIAL=PLA EXTRUDER=220 BED=60 HEIGHT=0.2 WIDTH=0.45 SPEED=30
+```
+After a normal Auto Trim start, 7 stripes of 60 mm are printed in the middle of the bed, each at a different offset around your current one (-0.06 to +0.06 mm, `FROM`, `TO`, `STEP`), and the force of each is measured:
+```
+AUTO TRIM: stripe 1: offset -0.060 mm, force 84.0 g (15 readings, spread 0.3)
+...
+AUTO TRIM: force calibration pla_h20_w45_s30: -400.0 g per mm (force falls as the nozzle goes up), fit 99 %, 48.0 g across the stripes
+AUTO TRIM: look at the stripes (stripe 1 is nearest the front) and pick the best one: AUTO_TRIM_FORCE_PICK STRIPE=<n>
+```
+Look at the stripes and choose the best first layer:
+```
+AUTO_TRIM_FORCE_PICK STRIPE=3
+```
+This saves the force of that stripe as the target and the measured gain (grams per mm), and moves your calibration (or the trim of that filament) by the offset of that stripe (`OFFSET=0` to keep the offset). If the force does not follow the offset clearly on the stripes (fit below 60 %), Auto Trim says so and `AUTO_TRIM_FORCE_PICK` refuses, because automatic correction would not be reliable.
+
+`AUTO_TRIM_FORCE_GOOD` after a print whose first layer was perfect uses the force of that print as the target instead (keeping the gain from the stripes).
+
+**The correction.** For each group of readings, the difference from the target is converted to millimetres with the gain:
+- Inside the deadband (`force_deadband`, 4 g, or twice the reading noise if larger), nothing changes.
+- Otherwise the offset moves towards the target, at most 0.02 mm at a time (`force_max_step`) and 0.05 mm per print (`force_max_total`).
+- Correction stops for the print, with a message, if the force does not follow two corrections, if the load cell zero drifts by more than 5 g during travel moves (`force_drift_limit`), or if the difference would need more than 0.10 mm (`force_max_error`): that is not a height problem but a dirty plate, a clog or other slicer settings.
+- Corrections apply to that print only. They are learned (into the calibration or the filament trim) only when 3 prints in a row needed the same correction within 0.01 mm (`force_agree_prints`, `force_agree_tol`), and only when you did not babystep the first layer yourself.
+
+This has not been checked against real first layers yet: the stripes are also the first test of whether the force follows the offset clearly enough on your printer. A positive zero drift cannot be told apart from pressing, so only a negative drift is caught.
+
+### Precise load cell (optional add-on)
+
+The bed weighing board measures far more finely than zMod passes on. Each reading it sends contains a raw count (about 43 counts per gram) and a rounded weight in 20 g steps. zMod keeps only the rounded weight, without its sign. The optional add-on `auto_trim_cell.py` keeps the raw count, so the first-layer force can be measured to a fraction of a gram, with its sign.
+
+It sends nothing to the board and opens no port: it reads the replies zMod already receives, 5 times a second. If a zMod update changes zMod internals, the add-on reports itself as not connected and Auto Trim falls back to the 20 g readings. If the add-on cannot zero at print start, the print continues with the 20 g readings for that print.
+
+Installing:
+1. Copy `auto_trim_cell.py` and `install_auto_trim_cell.sh` to `mod_data` (Fluidd: Configuration > mod_data).
+2. Over SSH, run `sh /usr/data/config/mod_data/install_auto_trim_cell.sh`. Run it again after every zMod update, before restarting: an update can remove the link, and Klipper then refuses to start while `[auto_trim_cell]` is in `user.cfg` (comment that line out first if you cannot run the installer straight away).
+3. Add `[auto_trim_cell]` to `user.cfg` and run `FIRMWARE_RESTART`.
+4. `AUTO_TRIM_STATUS` shows `load cell add-on: connected`.
+
+Calibrating (once, recommended): the 43 counts per gram is an estimate from one AD5X. With an empty bed, run `AUTO_TRIM_CELL_TARE`, place a known weight in the middle of the bed (for example a 500 g spool on a kitchen scale first), then run `AUTO_TRIM_CELL_CALIBRATE GRAMS=500`. The result is saved.
+
+| Command | What it does |
+|---|---|
+| `AUTO_TRIM_CELL_TARE` | Zeroes the precise force on fresh readings |
+| `AUTO_TRIM_CELL_READ` | Reports the force, raw count and noise |
+| `AUTO_TRIM_CELL_CALIBRATE GRAMS=<g>` | Measures counts per gram with a known weight on the bed |
+
+With the add-on, a reading counts as the nozzle pressing when it is above 5 g (`force_contact`), and the console says `precise load cell`. Because the readings are finer, `force_band` can be set much lower than its 40 g default, for example 5 to 10 g, once you have seen how much the force varies between good first layers.
+
+## Nozzle size
+
+The purge line and the flush test scale with the nozzle. The size comes from `[extruder] nozzle_diameter` in the printer config, or can be set for Auto Trim alone:
+```
+AUTO_TRIM_SET NOZZLE=0.6
+AUTO_TRIM_SET NOZZLE=0      (back to the printer config)
+```
+Klipper extrusion limits such as `max_extrude_cross_section` are part of the printer config and cannot be changed from a macro. Auto Trim checks the purge line against them instead.
+
+## Colour-change flush test (AD5X)
+
+Measures how much purge a colour change really needs on your hot end, with your filaments:
+```
+AUTO_TRIM_FLUSH_TEST FROM=1 TO=2
+```
+The printer changes from IFS slot 1 to slot 2 without purging at the trash chute, then extrudes 12 dots of 10 mm each along the front of the bed, left to right. A dark `FROM` and a light `TO` is the hardest case. Find the first dot fully in the new colour and save it: The number of dots is limited to what fits across the bed. If a tool change fails during the test, the zMod `use_trash_on_print` setting is put back at the next print start or `AUTO_TRIM_STATUS`.
+```
+AUTO_TRIM_FLUSH_RESULT DOT=6
+AUTO TRIM: a colour change needs about 60 mm of filament (144 mm3). In OrcaSlicer, set the flushing volume for this pair of colours to about 144 mm3 (Flushing volumes button, next to the filament list).
+```
+With the prime tower (zMod `nopoop` mode), OrcaSlicer does the flushing, so the result goes into the OrcaSlicer flushing volumes. Options: `STEP` (scales with the nozzle), `COUNT`, `TEMP`, `BED`.
+
 ## Ongoing use
 
 No routine action is needed. If a first layer looks wrong, babystep during the first layer and Auto Trim stores the correction once the first two layers are printed.
@@ -253,7 +466,7 @@ AUTO TRIM: offset changed by 0.05 after the first layers, not learned (first-lay
 
 When the first layers count as done:
 - If the slicer reports layer numbers, when layer 3 starts. To enable this in OrcaSlicer, add `SET_PRINT_STATS_INFO CURRENT_LAYER={layer_num + 1}` to Printer settings > Machine G-code > Layer change G-code (many printer profiles already have it).
-- Otherwise, when the nozzle stays above Z 1.0 mm (about layer 5 at 0.2 mm layers) for two checks in a row, after it has been on the first layer, while printing. A short Z-hop does not count, and neither does a pause, but a colour change or a long lift during the first layer can still end the first layers early. The Layer change G-code above avoids this, so add it; the console says so when it is missing.
+- Otherwise, when the nozzle stays above Z 1.0 mm (about layer 5 at 0.2 mm layers) for two checks in a row, after it has been on the first layer, while printing. A short Z-hop does not count, and neither does a pause, but a colour change or a long lift during the first layer can still end the first layers early. The Layer change G-code avoids this, so add it; the console says so when it is missing.
 - Prints too short to get there are learned at the end instead.
 
 Where babystep corrections are stored:
@@ -315,12 +528,11 @@ Auto Trim stops the print before printing starts, so nothing is damaged. The con
 | `not found. Is this zMod?` | A zMod command is missing | Update zMod, or check you are not on Forge-X |
 
 Notices (lines starting `!!` that do not stop the print):
+- `the mesh ... is smaller than the part outlines`: the part is wider higher up than on its first layer (a flared base, a bowl, an overhang). KAMP meshes the first layer, the slicer outline covers the whole part, and only the first layer needs the mesh, so the print continues.
 - `drift is 0.15 mm away from its learned value` (with `CHECK=AREA`): the bed check found a bigger change than usual for this filament. The print continues. If the plate was swapped or moved, that is expected. If not, check it is clean.
 - `START_PRINT should have SKIP_LEVELING=True`: your Orca start G-code is out of date. The print still works but takes longer. Update it as in Installation step 5.
 - `no labelled objects`: Label objects is off in Orca, so the whole bed gets mapped and the purge line goes to the front edge. Turn it on.
-- `no room for a purge line outside the print area`: shown only when there is no purge macro, the parts plus clearance fill the bed, and the parts also reach every stock edge line, or with `purge_fallback: OFF`. The purge is skipped and the print continues. Lower `purge_clearance` if your prints have no supports, brims or skirts.
-
-Information line: `the mesh ... is smaller than the part outlines` means the part is wider higher up than on its first layer (a flared base, a bowl, an overhang). KAMP meshes the first layer, the slicer outline covers the whole part, and only the first layer needs the mesh, so the print continues.
+- `no room for a purge line outside the print area`: the parts plus clearance fill the bed. The purge is skipped and the print continues. Lower `purge_clearance` if your prints have no supports, brims or skirts.
 
 ## Default filament adjustments
 
@@ -364,9 +576,18 @@ Run these in the Fluidd or Mainsail console.
 
 | Command | What it does | Example |
 |---|---|---|
-| `AUTO_TRIM_STATUS` | Shows the version, your calibration, the trim and learned drift of every filament | `AUTO_TRIM_STATUS` |
+| `AUTO_TRIM_STATUS` | Shows the version, your calibration, the trim and learned drift of every filament, the nozzle size, soak calibrations, first-layer force references and the flush result | `AUTO_TRIM_STATUS` |
 | `AUTO_TRIM_SET CALIBRATION=<value>` | Sets your base offset by hand | `AUTO_TRIM_SET CALIBRATION=0.23` |
 | `AUTO_TRIM_SET MATERIAL=<type> TRIM=<value>` | Sets the adjustment of one filament manually (not the baseline filament: use `CALIBRATION=` for that) | `AUTO_TRIM_SET MATERIAL=PETG TRIM=0.03` |
+| `AUTO_TRIM_FORCE_SWEEP MATERIAL= EXTRUDER= BED= HEIGHT= WIDTH= SPEED=` | Calibration stripes for the first-layer force (needs the add-on) | `AUTO_TRIM_FORCE_SWEEP MATERIAL=PLA EXTRUDER=220 BED=60 HEIGHT=0.2 WIDTH=0.45 SPEED=30` |
+| `AUTO_TRIM_FORCE_PICK STRIPE=<n>` | Saves the best stripe as the target force | `AUTO_TRIM_FORCE_PICK STRIPE=3` |
+| `AUTO_TRIM_FORCE_GOOD` | The last first layer was perfect: use its force as the target | `AUTO_TRIM_FORCE_GOOD` |
+| `AUTO_TRIM_SET NOZZLE=<mm>` | Sets the nozzle size for Auto Trim (0 = printer config) | `AUTO_TRIM_SET NOZZLE=0.6` |
+| `AUTO_TRIM_SOAK_CALIBRATE BED=<C>` | Measures the bed heat soak at one temperature, from a cold bed | `AUTO_TRIM_SOAK_CALIBRATE BED=60` |
+| `AUTO_TRIM_SOAK_ABORT` | Stops a running soak calibration | `AUTO_TRIM_SOAK_ABORT` |
+| `AUTO_TRIM_CLOSER` / `AUTO_TRIM_AWAY` | Moves the nozzle 0.01 mm (or `STEP=`) closer or away while printing | `AUTO_TRIM_CLOSER` |
+| `AUTO_TRIM_FLUSH_TEST FROM=<slot> TO=<slot>` | Measures the purge a colour change needs (AD5X IFS) | `AUTO_TRIM_FLUSH_TEST FROM=1 TO=2` |
+| `AUTO_TRIM_FLUSH_RESULT DOT=<n>` | Saves the flush test result | `AUTO_TRIM_FLUSH_RESULT DOT=6` |
 
 `AUTO_TRIM_PREPARE` and `AUTO_TRIM_LEARN` run from the start and end G-code and are not entered manually.
 
@@ -381,9 +602,9 @@ Add these to the end of the `AUTO_TRIM_PREPARE` line in the OrcaSlicer start G-c
 | `MESH=AUTO` | KAMP for small prints, the saved mesh for large ones | `MESH=AUTO` |
 | `CHECK=AREA` | Re-probes 5 points of the mapped area after the mesh and applies the drift. About 35 to 40 seconds longer | `CHECK=AREA` |
 | `CHECK=ALL` | Re-probes every mesh point. Slower | `CHECK=ALL` |
-| `PURGE=0` | Skips the purge line | `PURGE=0` |
-| `PURGE_MACRO=<macro>` | Runs your own purge macro instead of the built-in line | `PURGE_MACRO=MY_PURGE` |
+| `PURGE=<choice>` | Purge: `AUTO`, `ZMOD` or `OFF` (see Purge line) | `PURGE=ZMOD` |
 | `CLEAN=ZMOD` | Uses the standard zMod nozzle clean instead of the trash-chute clean on the AD5X | `CLEAN=ZMOD` |
+| `SOAK=OFF` / `SOAK=<seconds>` | No bed heat soak, or a fixed soak, for this print | `SOAK=OFF` |
 
 Example with a full-bed mesh and the optional bed check:
 ```
@@ -448,15 +669,29 @@ In `AUTO_TRIM_PREPARE`:
 | `check` | `OFF` | `OFF` (mesh only), `AREA` (re-probe 5 points) or `ALL` (re-probe every point) |
 | `max_mesh_range` | 0.6 mm | Stop if the mesh varies by more than this |
 | `mesh_coverage` | `WARN` | A mesh probed for this print that is smaller than the part outlines (flared or overhanging parts): `WARN` and print on, or `STOP` |
-| `purge` | on | Draw the purge line |
-| `purge_macro` | none | Your own purge macro, used instead of the built-in line |
+| `purge_mode` | `AUTO` | Purge: `AUTO`, `ZMOD` (the zMod `CLEAR` setting) or `OFF` |
+| `purge` | on | Old switch, kept for existing configs: off means `OFF` |
 | `purge_fallback` | `EDGE` | No room for the built-in line: use a stock edge line (`EDGE`) or skip the purge (`OFF`) |
 | `edge_clearance` | 3 mm | Space an edge line must keep from the parts. Small on purpose: the fallback runs when the parts nearly fill the bed. A brim or skirt wider than this near the bed edge can still meet an edge line |
 | `purge_clearance` | 10 mm | Space kept clear around the labelled parts, for supports, brims and skirts |
-| `purge_length` | 30 mm | Length of the purge line |
-| `purge_amount` | 30 mm | Filament extruded for the line |
-| `purge_height` | 0.8 mm | Nozzle height for the line |
-| `purge_flow` | 12 mm3/s | Flow rate for the line |
+| `purge_length` | 60 mm | Length of the purge line |
+| `purge_width` | 0 (2.5 x nozzle) | Width of the purge line |
+| `purge_height` | 0 (0.75 x nozzle) | Nozzle height for the line |
+| `purge_amount` | 0 (fills the line) | Filament extruded for the line |
+| `purge_speed` | 10 mm/s | Speed of the line |
+| `soak` | `AUTO` | Bed heat soak from the calibration (`AUTO`) or `OFF` |
+| `soak_per_degree` | 3 s | Soak per degree the bed rose, without a calibration |
+| `soak_max` | 600 s | Longest soak |
+| `force_mode` | `LEARN` | First-layer force: `OFF`, `LEARN` (measure) or `AUTO` (also correct towards the target; needs the add-on and the calibration stripes) |
+| `force_window` | 8 | Pressing readings judged together, by their median |
+| `force_deadband` | 4 g | With `AUTO`: no correction inside this (or twice the reading noise, if larger) |
+| `force_max_step` | 0.02 mm | With `AUTO`: largest single correction |
+| `force_max_total` | 0.05 mm | With `AUTO`: largest total correction per print |
+| `force_max_error` | 0.10 mm | With `AUTO`: a larger needed correction stops it (not a height problem) |
+| `force_drift_limit` | 5 g | With `AUTO`: travel readings this far from zero stop it |
+| `force_agree_prints` / `force_agree_tol` | 3 / 0.01 mm | Automatic corrections are learned when this many prints in a row agree within this |
+| `force_max_z` | 0.5 mm | Readings are only taken below this height, at the first layer |
+| `force_contact` | 5 g | With the load cell add-on: readings above this count as the nozzle pressing |
 | `clean` | `AUTO` | `AUTO` (trash-chute clean on the AD5X, standard zMod clean on the AD5M and AD5M Pro), `TRASH` or `ZMOD` |
 | `cool_wipe_step` | 25 C | AD5X: wipe on the rubber pad every this many degrees while the nozzle cools. 0 = only after the purge and at probing temperature |
 | `zmod_preclean` | `SKIP` | AD5X: `SKIP` the zMod nozzle pre-clean inside `START_PRINT` (Auto Trim cleans the nozzle itself), or `KEEP` it. `KEEP` runs a copy of the zMod 1.7 sequence, so check it after a zMod update |
@@ -476,6 +711,7 @@ Notes:
 ## Files
 
 - `auto_trim.cfg`: the Auto Trim macros
+- `auto_trim_cell.py`, `install_auto_trim_cell.sh`: the optional precise load cell add-on (Installation step 7)
 - `README.md`: this document
 - `CHANGELOG.md`: release history
 
@@ -491,4 +727,5 @@ Please include:
 
 - [zMod](https://github.com/ghzserg/zmod) by ghzserg: the firmware whose nozzle cleaning, KAMP integration and probing Auto Trim builds on.
 - [KAMP (Klipper Adaptive Meshing & Purging)](https://github.com/kyleisah/Klipper-Adaptive-Meshing-Purging) by kyleisah: adaptive meshing.
+- [Kiln OS](https://github.com/djvalic/kiln-os) by djvalic: the bed heat soak calibration method and measurements, the colour-change flush test, nozzle-scaled purge sizes and the load-cell first-layer ideas, adapted here as zMod macros.
 - [Klipper](https://www.klipper3d.org/): the underlying firmware.

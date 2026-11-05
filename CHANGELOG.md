@@ -3,6 +3,91 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [4.0.0-beta.5] - unreleased (beta)
+
+Development work since 3.8.0, not released. Changes existing options (the purge choice, `purge_flow`), so the next release from it will be 4.0.0. The steps below are numbered in the order the work was done. Step 5 was also released on its own as 3.9.0, the purge fixes from steps 3 and 4 as 3.9.1, step 6 as 3.9.2, part of step 7 as 3.9.3, and step 9 as 3.9.4.
+
+### Beta step 9 (2026-11-05)
+
+#### Changed
+- zMod 1.7.5: without labelled objects, the purge line and the stock edge line use the first-layer area zMod finds in the file (Fast KAMP), and the "KAMP cannot size the mesh" warning is not shown when zMod sized the mesh itself.
+- README: a section on zMod 1.7.5.
+
+### Beta step 8 (2026-11-04)
+
+#### Added
+- Automatic first-layer correction from the load cells (`force_mode: AUTO`, with the add-on): calibration stripes (`AUTO_TRIM_FORCE_SWEEP`, `AUTO_TRIM_FORCE_PICK`) measure the target force and the gain for given first-layer settings (`FL_HEIGHT`, `FL_WIDTH`, `FL_SPEED` on the start line); `AUTO_TRIM_FORCE_GOOD` takes the target from a good print. During the first layer the median force of every 8 readings is compared with the target, and the offset corrected proportionally, within a deadband and limits per step and per print. Correction stops if the force does not follow, the zero drifts, or the error is too large to be a height problem. Corrections are learned only when 3 prints in a row agree.
+- Load cell add-on: `AUTO_TRIM_CELL_MARK` and `AUTO_TRIM_CELL_MEASURE` (median force over a move).
+
+#### Changed
+- The `force_band`, `force_step`, `force_max_steps`, `force_min_samples` and `force_min_prints` settings are replaced by the settings of the new correction.
+
+### Beta step 7 (2026-11-04)
+
+#### Fixed
+- The 3.9.3 fixes: learning without layer numbers, the offset after a failed start, `AUTO_TRIM_SET` for the baseline filament, leftover state, AD5M purge messages, macro name case, the `MATERIAL` default, and no labelled objects.
+- A print could start while a bed soak calibration was running, and the next calibration round would probe the bed mid-print and switch the heaters off. Starting a print is now refused while a calibration runs, and a round during a print stops the calibration without touching the heaters.
+- A flush test stopped by a failed tool change left zMod `use_trash_on_print` at 0. It is backed up first and put back at the next print start or `AUTO_TRIM_STATUS`. The number of dots is limited to what fits across the bed.
+- Load cell add-on: it reported "connected" as soon as it was hooked in, even without readings. It now does so only after the first reading, and keeps 50 readings instead of 600.
+
+#### Changed
+- `force_mode: AUTO` nudges apply to the current print only and are not learned.
+- The wipe macro and the stock edge line run inside save and restore of the G-code state; the purge wipe move stays within the travel limits; the purge size check runs only for the built-in line and checks a hand-set `purge_amount`.
+- README: re-run the add-on installer after a zMod update before restarting; preheating from the screen skips the bed soak; the layer change G-code is needed for reliable learning.
+
+### Beta step 6 (2026-11-04)
+
+#### Fixed
+- First-layer learning could happen before the first layer: until layer 1 starts the layer number is 0, so the nozzle height was used, and the nozzle is above 1 mm after the purge line. If the start took more than a few seconds (an IFS filament load, for example), "no babysteps" was learned and the first-layer corrections were then reported as not learned. The nozzle height now only counts once the nozzle has been on the first layer.
+- `MESH=AUTO` stopped the print with a template error when `probe_count` has a single value (`probe_count: 7`). A single value now counts for both directions.
+- With `MESH=SAVED`, the shift of the saved mesh was learned as drift. It is still applied, but no longer learned.
+- A cancelled or stopped print kept its Z offset and filament. Both are now cleared and the offset set back to 0.
+
+#### Changed
+- The load cells are zeroed after a short pause (1 s, 2 s after the part fan turns off), including in the bed heat soak and its calibration.
+- The `settle_ms` description and the README mesh size notes: the pause does not prevent `Timer too close` on dense meshes, and the 7 x 7 limit applies to saved meshes too.
+
+### Beta step 5 (2026-11-02), released on its own as 3.9.0
+
+#### Fixed
+- Parts that are wider above their first layer (a flared base, a bowl, an overhang) stopped every print with `the mesh ... does not cover this print`. KAMP meshes the first layer, while the check compared the mesh with the outline of the whole part from the slicer. For a mesh probed for this print, the difference is now reported and the print continues (`mesh_coverage`, default `WARN`). A saved mesh, or `mesh_coverage: STOP`, still stops the print.
+- The coverage message shows the mesh area rounded to 0.1 mm.
+
+### Beta step 4 (2026-10-30)
+
+#### Changed
+- One purge choice, `PURGE=` / `purge_mode`: `AUTO` (the Auto Trim line outside the print area), `ZMOD` (the zMod purge chosen with `SAVE_ZMOD_DATA CLEAR=`: `LINE_PURGE`, the stock `_CLEAR1` to `_CLEAR4`, or your own macro in `user.cfg`, run after the Z offset is set) or `OFF`.
+- Replaces `PURGE_MACRO`, `purge_macro` and `PURGE_OUTSIDE`, since zMod already selects any purge macro. Start G-code with `PURGE_MACRO=<name>` still runs that macro, and `PURGE=0` / `PURGE=1` work as before.
+
+### Beta step 3 (2026-10-29)
+
+#### Added
+- Purge macros that draw outside the build area: the zMod stock line-clears (`_CLEAR1` to `_CLEAR4`) are recognised automatically, and `PURGE_OUTSIDE=1` / `purge_macro_outside` marks your own. Auto Trim then plans no line inside the bed for them.
+- Edge-line fallback (`purge_fallback`): when the parts leave no room for the built-in line, a stock Flashforge edge line that stays clear of the parts is used instead of skipping the purge.
+
+#### Fixed
+- With a purge macro and no room inside the bed, Auto Trim showed an error saying the purge was skipped, although the macro still ran. It now shows an information line.
+- Load cell add-on: a failed zero at print start (for example a stalled zMod reader) could stop the print. It now continues with the 20 g readings.
+- Load cell add-on: a single nonsense reading from the board (above 5 kg) could distort the precise force for a second. These are now ignored.
+
+### Beta step 2 (2026-10-28)
+
+#### Added
+- Optional load cell add-on `auto_trim_cell.py`: keeps the raw count from the bed weighing board, which zMod discards, for a signed force to a fraction of a gram instead of 20 g steps. Reads the replies zMod already receives. Commands `AUTO_TRIM_CELL_TARE`, `AUTO_TRIM_CELL_READ`, `AUTO_TRIM_CELL_CALIBRATE`.
+- First-layer force uses the add-on when it is installed (`force_contact`), and falls back to the 20 g readings otherwise.
+
+### Beta step 1 (2026-10-28)
+
+#### Added
+- Bed heat soak: `AUTO_TRIM_SOAK_CALIBRATE` measures how long the bed keeps moving after heating. Prints starting from a cold bed wait for it before probing; the nozzle clean counts towards the wait.
+- Live first-layer adjustment: `AUTO_TRIM_CLOSER` and `AUTO_TRIM_AWAY`.
+- First-layer force from the bed load cell (`force_mode`): measured on every print, kept as a per-filament reference when the first layer needed no correction, and with `AUTO` used to nudge the offset (experimental; the default only measures).
+- Nozzle size: `AUTO_TRIM_SET NOZZLE=`. The purge line is 2.5 x the nozzle wide and 0.75 x high, and is checked against the extruder limit.
+- Colour-change flush test for the AD5X IFS: `AUTO_TRIM_FLUSH_TEST` and `AUTO_TRIM_FLUSH_RESULT`.
+
+#### Changed
+- Purge line: 60 mm at 10 mm/s with the filament amount worked out from its size (about 7.5 mm for a 0.4 mm nozzle). `purge_flow` is replaced by `purge_speed`.
+
 ## [3.9.4] - 2026-11-05
 
 ### Changed
