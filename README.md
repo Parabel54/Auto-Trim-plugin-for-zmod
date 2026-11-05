@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.9.3 (2026-11-04). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.9.4 (2026-11-05). For printers running Forge-X, use Auto Trim for Forge-X.
 
 Auto Trim sets the first-layer Z offset at the start of every print from a stored calibration, a per-filament adjustment and a bed measurement taken immediately before printing. Babystep corrections made during the first layer are stored and applied to later prints.
 
@@ -32,6 +32,16 @@ Not for Forge-X: use Auto Trim for Forge-X instead.
 ## Status
 
 Beta. Built against the zMod 1.7.4 macros and tested extensively in a Klipper simulation of the print start (fresh installs, restarts, every safety stop, KAMP and full meshes, different temperatures and filaments). It has not yet been confirmed across many real printers. Watch the console on your first few prints, and please report anything unexpected (see Reporting problems).
+
+## zMod 1.7.5
+
+Auto Trim works with zMod 1.7.5. Things to know:
+
+- **Print dialog:** zMod 1.7.5 saves the leveling option of its colour selection dialog as `PRINT_LEVELING`. Leave leveling unticked: Auto Trim makes its own mesh, and stops before printing (with a message) if `PRINT_LEVELING` is on.
+- **Fast KAMP:** zMod now sizes the KAMP mesh from the file itself. With labelled objects the mesh covers the parts and their first layer. With a `.gcode.3mf` file the mesh covers the first layer, so a part that is wider higher up gives the information line about part outlines (the print continues).
+- **Labelled objects:** zMod no longer needs them, and Auto Trim works without them: the purge line is planned outside the first-layer area zMod found in the file. Labels are still better, because they include the whole part outline.
+- **3MF files** (Orca sending `.gcode.3mf`) work: zMod unpacks the G-code and runs it, start G-code included.
+- **Screen:** GuppyScreen or HelixScreen. With the native Flashforge screen, zMod hands the print to the Flashforge firmware, which is not supported by Auto Trim.
 
 ## Overview
 
@@ -186,7 +196,7 @@ Before printing, Auto Trim draws a short purge line to prime the nozzle. It is p
 - The print area is every labelled part plus a clearance of 10 mm (`purge_clearance`). Object outlines from the slicer may not include supports, brims or skirts; the clearance covers them.
 - The line goes in the free strip between that area and the edge of the bed, halfway across the strip, centred on the parts. The front is used when it has room. Otherwise the back, left or right side with the most room is used.
 - If the parts plus clearance leave no room on any side, a stock Flashforge edge line is used instead (AD5X): the zMod `SAVE_ZMOD_DATA CLEAR=` choice first, then the rear line `_CLEAR1` (which loops back to catch strings), the right-side line `_CLEAR4` and the front lines, whichever stays 3 mm clear of the parts (`edge_clearance`). If the parts reach every edge line, the purge is skipped with a notice. `purge_fallback: OFF` skips it instead of using an edge line.
-- Without labelled objects (Label objects off in OrcaSlicer), the print area is unknown and a line across the bed could run under the print. A stock edge line is used instead (AD5X); on the AD5M the purge is skipped with a notice. Turn on Label objects for a planned line.
+- Without labelled objects (Label objects off in OrcaSlicer), the line is planned outside the first-layer area zMod 1.7.5 finds in the file (Fast KAMP). With older zMod, or when zMod found no area, the print area is unknown and a line across the bed could run under the print: a stock edge line is used instead (AD5X), or the purge is skipped with a notice (AD5M).
 
 Before the line is drawn, the filament is pushed back to the nozzle tip, so the line is full from the start. On the AD5X the nozzle is reheated and wiped at the trash chute before moving to the line. On the AD5M and AD5M Pro it is reheated while hovering above the start of the line, so any ooze lands where the line begins, not on the print area.
 

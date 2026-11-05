@@ -3,6 +3,13 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.9.4] - 2026-11-05
+
+### Changed
+- zMod 1.7.5: without labelled objects, the purge line is planned outside the first-layer area zMod finds in the file (Fast KAMP) instead of using a stock edge line or skipping the purge. The stock edge line fallback uses that area too.
+- zMod 1.7.5: without labelled objects, the `!! no labelled objects, so KAMP cannot size the mesh` warning (a touch screen popup) is no longer shown when zMod sized the mesh itself (Fast KAMP); an information line says so instead.
+- README: a section on zMod 1.7.5 (print dialog leveling option, Fast KAMP, labelled objects, 3MF files, screen).
+
 ## [3.9.3] - 2026-11-04
 
 ### Fixed
