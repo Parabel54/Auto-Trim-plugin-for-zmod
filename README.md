@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 4.0.0-beta.5 (2026-11-05). **Beta**: development work, not released. The released version is 3.9.4 on GitHub. For printers running Forge-X, use Auto Trim for Forge-X.
+Version 4.0.0-beta.6 (2026-11-05). **Beta**: development work, not released. The released version is 3.9.4 on GitHub. For printers running Forge-X, use Auto Trim for Forge-X.
 
 Auto Trim sets the first-layer Z offset at the start of every print from a stored calibration, a per-filament adjustment and a bed measurement taken immediately before printing. Babystep corrections made during the first layer are stored and applied to later prints.
 
@@ -38,7 +38,7 @@ Beta. Built against the zMod 1.7.4 macros and tested extensively in a Klipper si
 
 ## This beta
 
-This is 4.0.0-beta.5: development work that has not been released yet. The released version is 3.9.4, on GitHub. Use the beta to try the new features before they are released, and report what you find (see Reporting problems).
+This is 4.0.0-beta.6: development work that has not been released yet. The released version is 3.9.4, on GitHub. Use the beta to try the new features before they are released, and report what you find (see Reporting problems).
 
 ### New compared with 3.9.4
 
@@ -386,8 +386,10 @@ With `force_mode: LEARN` (the default) the force is only measured and reported. 
 
 **Finding the target: calibration stripes.** With the bed cold or warm, not during a print, run the stripes with your print temperatures and the first-layer height, line width and speed of your slicer profile:
 ```
-AUTO_TRIM_FORCE_SWEEP MATERIAL=PLA EXTRUDER=220 BED=60 HEIGHT=0.2 WIDTH=0.45 SPEED=30
+AUTO_TRIM_FORCE_SWEEP MATERIAL=PLA EXTRUDER=220 BED=60 HEIGHT=0.2 WIDTH=0.45 SPEED=30 SLOT=1
 ```
+`SLOT=` (1 to 4) loads that IFS slot after heating, with the zMod command `SET_CURRENT_PRUTOK` (as a print does with its first tool change; zMod only changes filament if another one is active). Without it, the filament must already be in the toolhead: if the toolhead sensor reports none, the sweep stops before heating.
+
 After a normal Auto Trim start, 7 stripes of 60 mm are printed in the middle of the bed, each at a different offset around your current one (-0.06 to +0.06 mm, `FROM`, `TO`, `STEP`), and the force of each is measured:
 ```
 AUTO TRIM: stripe 1: offset -0.060 mm, force 84.0 g (15 readings, spread 0.3)
@@ -579,7 +581,7 @@ Run these in the Fluidd or Mainsail console.
 | `AUTO_TRIM_STATUS` | Shows the version, your calibration, the trim and learned drift of every filament, the nozzle size, soak calibrations, first-layer force references and the flush result | `AUTO_TRIM_STATUS` |
 | `AUTO_TRIM_SET CALIBRATION=<value>` | Sets your base offset by hand | `AUTO_TRIM_SET CALIBRATION=0.23` |
 | `AUTO_TRIM_SET MATERIAL=<type> TRIM=<value>` | Sets the adjustment of one filament manually (not the baseline filament: use `CALIBRATION=` for that) | `AUTO_TRIM_SET MATERIAL=PETG TRIM=0.03` |
-| `AUTO_TRIM_FORCE_SWEEP MATERIAL= EXTRUDER= BED= HEIGHT= WIDTH= SPEED=` | Calibration stripes for the first-layer force (needs the add-on) | `AUTO_TRIM_FORCE_SWEEP MATERIAL=PLA EXTRUDER=220 BED=60 HEIGHT=0.2 WIDTH=0.45 SPEED=30` |
+| `AUTO_TRIM_FORCE_SWEEP MATERIAL= EXTRUDER= BED= HEIGHT= WIDTH= SPEED= [SLOT=]` | Calibration stripes for the first-layer force (needs the add-on). `SLOT=` loads an IFS slot first | `AUTO_TRIM_FORCE_SWEEP MATERIAL=PLA EXTRUDER=220 BED=60 HEIGHT=0.2 WIDTH=0.45 SPEED=30` |
 | `AUTO_TRIM_FORCE_PICK STRIPE=<n>` | Saves the best stripe as the target force | `AUTO_TRIM_FORCE_PICK STRIPE=3` |
 | `AUTO_TRIM_FORCE_GOOD` | The last first layer was perfect: use its force as the target | `AUTO_TRIM_FORCE_GOOD` |
 | `AUTO_TRIM_SET NOZZLE=<mm>` | Sets the nozzle size for Auto Trim (0 = printer config) | `AUTO_TRIM_SET NOZZLE=0.6` |

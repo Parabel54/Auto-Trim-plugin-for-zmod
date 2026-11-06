@@ -3,9 +3,14 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
-## [4.0.0-beta.5] - unreleased (beta)
+## [4.0.0-beta.6] - unreleased (beta)
 
 Development work since 3.8.0, not released. Changes existing options (the purge choice, `purge_flow`), so the next release from it will be 4.0.0. The steps below are numbered in the order the work was done. Step 5 was also released on its own as 3.9.0, the purge fixes from steps 3 and 4 as 3.9.1, step 6 as 3.9.2, part of step 7 as 3.9.3, and step 9 as 3.9.4.
+
+### Beta step 10 (2026-11-05)
+
+#### Fixed
+- `AUTO_TRIM_FORCE_SWEEP` did not load filament: run from the console, no slicer tool change loads a slot, so the stripes could be printed with an empty toolhead. `SLOT=` (1 to 4) now loads that IFS slot after heating with zMod `SET_CURRENT_PRUTOK` (the `T0` to `T3` tool commands only exist inside zMod print files), and without it the sweep stops before heating if the toolhead sensor reports no filament.
 
 ### Beta step 9 (2026-11-05)
 
