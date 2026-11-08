@@ -3,6 +3,21 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.9.6] - 2026-11-08
+
+Config-only update based on the GitHub 3.9.4 package. No new Python modules or installer scripts.
+
+### Changed
+- Default native bed probing to 1 mm/s and both Z homing touches to 1 mm/s. Keep 5 mm/s lift; preserve retract distance, samples, tolerances and offsets. Explicitly request 1 mm/s for Auto Trim full meshes and bed-check probes; KAMP inherits the global probe default because its wrapper drops command parameters.
+- Default AD5X cooling-wipe interval to 70 C. Keep hot post-purge and final cool wipes. Add optional `COOL_WIPE_STEP` on `AUTO_TRIM_PREPARE`.
+- Default AD5X rubber wipe to four gentle alternating X65/X81 sweeps from the slower zMod 1.7.5 pass, retaining the stock three Y in/out chute-knocking cycles and omitting the aggressive fast X shaking. Keep the entry/exit corridor and 2 mm retraction. Restore caller coordinate/extrusion modes without returning to the saved position.
+- Add optional `RUBBER_WIPE=SOFT|STOCK`; use `COOL_WIPE_STEP=25 RUBBER_WIPE=STOCK` to select the older interval and installed stock wipe for Auto Trim's trash-clean/reheat path. The earlier optional pre-clean follows the configured default.
+
+### Scope and validation
+- A true guarded 5-to-1 approach requires native helper code and is not represented as a config setting. This config-only version uses 1 mm/s throughout, as selected.
+- Keep calibration, learned trims, offset math, mesh selection and print heating sequence unchanged. No Deep Calibration/startup experiments are imported.
+- Macro compilation and offline route/motion/option checks pass; physical 3.9.6 validation remains pending.
+
 ## [3.9.4] - 2026-11-05
 
 ### Changed
@@ -100,3 +115,4 @@ First public release.
 - Purge line placed outside the print area.
 - Safety stops for wrong zMod settings, failed bed checks and out-of-range offsets.
 - `AUTO_TRIM_STATUS` and `AUTO_TRIM_SET` commands.
+

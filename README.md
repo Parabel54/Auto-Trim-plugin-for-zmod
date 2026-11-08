@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.9.4 (2026-11-05). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.9.6 (2026-11-08). For printers running Forge-X, use Auto Trim for Forge-X.
 
 Auto Trim sets the first-layer Z offset at the start of every print from a stored calibration, a per-filament adjustment and a bed measurement taken immediately before printing. Babystep corrections made during the first layer are stored and applied to later prints.
 
@@ -17,6 +17,28 @@ Auto Trim sets the first-layer Z offset at the start of every print from a store
 - Safety stops: the print stops before printing if settings are wrong, the bed check looks wrong, or the offset would be out of range.
 - Detailed console output: every measurement, the offset breakdown and every learned change is printed.
 - Leaves the offset at 0 after every finished print.
+
+## Defaults in 3.9.6
+
+This is a config-only update to the GitHub 3.9.4 package: replace `auto_trim.cfg` and restart Klipper. No Python modules, shell installer, Deep Calibration package or extra calibration/mesh script is required. If another config later defines these same speed settings, include Auto Trim after that config or remove the conflicting overrides.
+
+- Native bed probing defaults to **1 mm/s throughout**, including KAMP, full meshes, probe accuracy tests and screw measurements. Auto Trim full-mesh and check-point commands also explicitly request 1 mm/s. Native KAMP drops command parameters, so it inherits the `[probe] speed: 1` setting rather than relying on a forwarded parameter.
+- Z homing defaults to **1 mm/s on both touches**. This also applies to probe-based homing through g28_tenz. XY homing is unchanged.
+- Lift speed remains **5 mm/s**. Sample counts, sample tolerance, retract distance and Z offsets are unchanged.
+- AD5X intermediate cooling wipes happen every **70 C** by default. The hot post-purge wipe and final cool wipe still run; a 230 -> 121 C cooldown adds one intermediate wipe at 160 C.
+- AD5X rubber wipes use only **four alternating X sweeps at 100 mm/s**, retaining the slower zMod pass's X65/X81 endpoints. The stock three chute-knocking cycles (Y in/out at F5000) are retained before the gentle side-to-side sweeps. The fast X shaking and velocity/acceleration boosts are omitted. The rubber entry/exit corridor and the stock pre-slow-pass 2 mm retraction are retained. Caller coordinate and extrusion modes are restored afterwards.
+
+These defaults require no additional slicer parameters. To choose the wipe behavior per print, append to the existing `AUTO_TRIM_PREPARE` line:
+
+```gcode
+AUTO_TRIM_PREPARE MATERIAL={filament_type[initial_extruder]} COOL_WIPE_STEP=70 RUBBER_WIPE=SOFT
+```
+
+For example, `COOL_WIPE_STEP=25 RUBBER_WIPE=STOCK` selects the previous interval and the installed zMod wipe. `COOL_WIPE_STEP=0` keeps only the hot and final cool wipes. An explicitly enabled zMod pre-clean (`zmod_preclean: KEEP`) runs before `AUTO_TRIM_PREPARE`, so it follows the configured `rubber_wipe` default rather than that later command's per-print override. The standard `CLEAN=ZMOD` cleaning path remains the installed native routine.
+
+The requested **5 -> 1 mm/s transition is not included**: Klipper cannot implement a monitored mid-approach speed transition through `[probe]` settings alone. This version uses the selected config-only alternative, 1 mm/s for the entire probe descent. Normal native commands can still explicitly override their speed; these are defaults, not a firmware speed lock. No Deep Calibration soak, live corrections or extra bed mesh is added to print startup.
+
+Validation: all macro templates compile, and offline render/regression checks cover the KAMP/full/saved routes, unchanged offset/learning macros, wipe thresholds, four-sweep path and optional wipe settings. This 3.9.6 configuration has not been physically tested on a printer.
 
 ## Requirements
 
@@ -66,7 +88,7 @@ On the AD5X the nozzle is cleaned at the trash chute, so nothing hot or oozing i
 |---|---|---|
 | 1 | Homes, heats the bed and nozzle | Standard zMod start (`START_PRINT`). The zMod nozzle pre-clean is skipped, because Auto Trim cleans the nozzle itself in steps 2 to 4 |
 | 2 | Purges 10 mm into the trash chute and wipes the nozzle on the rubber pad while it is still hot | Clears old filament and removes the purged strand before it can cool and fall onto the bed |
-| 3 | Waits at the trash chute while the nozzle cools to 121 C, wiping it on the rubber pad every 25 C (195, 170, 145) and returning to the chute in between | Ooze is removed in stages as it forms, instead of building into one long string |
+| 3 | Waits at the trash chute while the nozzle cools to 121 C, wiping it on the rubber pad every 70 C (160 C when starting at 230 C) and returning to the chute in between | Ooze is removed in stages as it forms, instead of building into one long string |
 | 4 | Wipes the cooled nozzle on the rubber pad a final time | The nozzle is clean and no longer oozing when probing starts |
 | 5 | Maps the bed under your model | The KAMP mesh: only the area you are printing on |
 | 6 | Checks the mesh | It must cover the print and stay within a normal range |
@@ -384,6 +406,8 @@ Add these to the end of the `AUTO_TRIM_PREPARE` line in the OrcaSlicer start G-c
 | `PURGE=0` | Skips the purge line | `PURGE=0` |
 | `PURGE_MACRO=<macro>` | Runs your own purge macro instead of the built-in line | `PURGE_MACRO=MY_PURGE` |
 | `CLEAN=ZMOD` | Uses the standard zMod nozzle clean instead of the trash-chute clean on the AD5X | `CLEAN=ZMOD` |
+| `COOL_WIPE_STEP=70` | Temperature drop between intermediate cooling wipes; 0 skips intermediate wipes | `COOL_WIPE_STEP=70` |
+| `RUBBER_WIPE=SOFT` | Gentle side-to-side rubber wipe (default); `STOCK` selects the installed zMod wipe | `RUBBER_WIPE=STOCK` |
 
 Example with a full-bed mesh and the optional bed check:
 ```
@@ -458,7 +482,8 @@ In `AUTO_TRIM_PREPARE`:
 | `purge_height` | 0.8 mm | Nozzle height for the line |
 | `purge_flow` | 12 mm3/s | Flow rate for the line |
 | `clean` | `AUTO` | `AUTO` (trash-chute clean on the AD5X, standard zMod clean on the AD5M and AD5M Pro), `TRASH` or `ZMOD` |
-| `cool_wipe_step` | 25 C | AD5X: wipe on the rubber pad every this many degrees while the nozzle cools. 0 = only after the purge and at probing temperature |
+| `cool_wipe_step` | 70 C | AD5X: wipe on the rubber pad every this many degrees while the nozzle cools. 0 = only after the purge and at probing temperature |
+| `rubber_wipe` | `SOFT` | AD5X: stock chute knocking, then four gentle alternating X sweeps from the slower rubber pass. `STOCK` calls the installed zMod wipe instead |
 | `zmod_preclean` | `SKIP` | AD5X: `SKIP` the zMod nozzle pre-clean inside `START_PRINT` (Auto Trim cleans the nozzle itself), or `KEEP` it. `KEEP` runs a copy of the zMod 1.7 sequence, so check it after a zMod update |
 | `restore_tip` | automatic | Filament pushed back to the nozzle tip after reheating, in mm. Automatic: 3 on the AD5X (its clean retracts 3 mm), 0 on the AD5M and AD5M Pro |
 | `max_drift` | 0.3 | With the check on: stop if any checked spot is this far from the map |
@@ -492,3 +517,4 @@ Please include:
 - [zMod](https://github.com/ghzserg/zmod) by ghzserg: the firmware whose nozzle cleaning, KAMP integration and probing Auto Trim builds on.
 - [KAMP (Klipper Adaptive Meshing & Purging)](https://github.com/kyleisah/Klipper-Adaptive-Meshing-Purging) by kyleisah: adaptive meshing.
 - [Klipper](https://www.klipper3d.org/): the underlying firmware.
+
