@@ -3,6 +3,13 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.9.8] - 2026-11-10
+
+### Added
+- Bed heat soak before probing (from the 4.0 beta), off by default: `soak` setting or `SOAK=` on the start line (`AUTO`, `OFF` or seconds). `AUTO_TRIM_SOAK_CALIBRATE BED=` measures it from a cold bed; `AUTO_TRIM_SOAK_ABORT` stops it. A print is refused while a soak calibration runs, and a soak round finding a print running stops the calibration without touching the heaters.
+- `AUTO_TRIM_MESH_CALIBRATE BED=`: from a cold bed, nozzle clean, soak calibration, then (only if the bed settled) a full mesh at probing temperature saved as the profile used by `MESH=SAVED`, and `SAVE_CONFIG`.
+- Soak probes use `probe_speed` (1 mm/s), like the meshes.
+
 ## [3.9.7] - 2026-11-09
 
 ### Changed

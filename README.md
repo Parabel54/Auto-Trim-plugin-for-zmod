@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.9.7 (2026-11-09). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.9.8 (2026-11-10). For printers running Forge-X, use Auto Trim for Forge-X.
 
 Auto Trim sets the first-layer Z offset at the start of every print from a stored calibration, a per-filament adjustment and a bed measurement taken immediately before printing. Babystep corrections made during the first layer are stored and applied to later prints.
 
@@ -33,6 +33,27 @@ AUTO_TRIM_PREPARE MATERIAL={filament_type[initial_extruder]} COOL_WIPE_STEP=70 R
 ```
 
 `COOL_WIPE_STEP=25 RUBBER_WIPE=STOCK` gives the wipes of 3.9.4; `COOL_WIPE_STEP=0` keeps only the wipes after the purge and at probing temperature. Every wipe retracts the filament 2 mm; when the nozzle is reheated, Auto Trim pushes back all of it, so the purge line starts with filament at the tip.
+
+## Bed heat soak
+
+After the bed sensor reaches its target, the plate keeps warming and moving for several minutes. A soak waits for that before the mesh is probed. It is off by default (`soak: OFF`). Turn it on with `SOAK=` on the `AUTO_TRIM_PREPARE` line, or by changing `soak`:
+
+- `SOAK=AUTO` soaks the time measured for the nearest calibrated bed temperature, scaled by how far the bed rose. Without a calibration it soaks 3 s per degree risen (`soak_per_degree`), at most 600 s (`soak_max`). A bed that started within 5 C of its target needs no soak, and time already spent hot (nozzle clean, cooling) counts.
+- `SOAK=300` soaks that many seconds. `SOAK=OFF` none.
+
+**Measuring the soak.** From a cold bed (below 40 C):
+```
+AUTO_TRIM_SOAK_CALIBRATE BED=60
+```
+The nozzle is held at probing temperature, the bed is heated, and the centre and four points near the corners are probed every minute until they stay within 0.02 mm for 4 minutes. The result is saved for that bed temperature. `AUTO_TRIM_SOAK_ABORT` stops it.
+
+**Soak and saved mesh in one go.** From a cold bed:
+```
+AUTO_TRIM_MESH_CALIBRATE BED=60
+```
+This cleans the nozzle at the trash chute (AD5X) with the bed off, measures the soak as above, and when the bed has settled probes a full mesh at probing temperature and saves it as `auto`, the profile used by `MESH=SAVED` and `MESH=AUTO`. `SAVE_CONFIG` then keeps the mesh (Klipper restarts; `SAVE=0` to skip it). If the bed does not settle, no mesh is saved and the existing one is kept. The mesh uses the `probe_count` of your printer config: 7 x 7 or less, or a lower `mesh_pps` (see Denser mesh).
+
+All soak and mesh probes use `probe_speed` (1 mm/s).
 
 ## Requirements
 
@@ -383,6 +404,9 @@ Run these in the Fluidd or Mainsail console.
 | `AUTO_TRIM_STATUS` | Shows the version, your calibration, the trim and learned drift of every filament | `AUTO_TRIM_STATUS` |
 | `AUTO_TRIM_SET CALIBRATION=<value>` | Sets your base offset by hand | `AUTO_TRIM_SET CALIBRATION=0.23` |
 | `AUTO_TRIM_SET MATERIAL=<type> TRIM=<value>` | Sets the adjustment of one filament manually (not the baseline filament: use `CALIBRATION=` for that) | `AUTO_TRIM_SET MATERIAL=PETG TRIM=0.03` |
+| `AUTO_TRIM_SOAK_CALIBRATE BED=<C>` | Measures the bed soak from a cold bed | `AUTO_TRIM_SOAK_CALIBRATE BED=60` |
+| `AUTO_TRIM_MESH_CALIBRATE BED=<C>` | From a cold bed: nozzle clean, soak calibration, then a full mesh saved for `MESH=SAVED` | `AUTO_TRIM_MESH_CALIBRATE BED=60` |
+| `AUTO_TRIM_SOAK_ABORT` | Stops a running soak calibration | `AUTO_TRIM_SOAK_ABORT` |
 
 `AUTO_TRIM_PREPARE` and `AUTO_TRIM_LEARN` run from the start and end G-code and are not entered manually.
 
@@ -477,6 +501,9 @@ In `AUTO_TRIM_PREPARE`:
 | `purge_flow` | 12 mm3/s | Flow rate for the line |
 | `clean` | `AUTO` | `AUTO` (trash-chute clean on the AD5X, standard zMod clean on the AD5M and AD5M Pro), `TRASH` or `ZMOD` |
 | `cool_wipe_step` | 70 C | AD5X: wipe on the rubber pad every this many degrees while the nozzle cools. 0 = only after the purge and at probing temperature |
+| `probe_speed` | 1 mm/s | Probe speed for every bed mesh (zMod, KAMP, Auto Trim) and Auto Trim's probes. 0 = Klipper's own speed |
+| `soak` | `OFF` | Bed heat soak before probing: `OFF`, `AUTO` (measured, or per degree risen) or seconds |
+| `soak_per_degree` / `soak_max` | 3 s / 600 s | `SOAK=AUTO` without a calibration: seconds per degree risen, and the most |
 | `rubber_wipe` | `SOFT` | AD5X: stock chute knocking, then four gentle alternating X sweeps from the slower rubber pass. `STOCK` calls the installed zMod wipe instead |
 | `zmod_preclean` | `SKIP` | AD5X: `SKIP` the zMod nozzle pre-clean inside `START_PRINT` (Auto Trim cleans the nozzle itself), or `KEEP` it. `KEEP` runs a copy of the zMod 1.7 sequence, so check it after a zMod update |
 | `restore_tip` | automatic | Filament pushed back to the nozzle tip after reheating, in mm. Automatic: 3 on the AD5X (its clean retracts 3 mm), 0 on the AD5M and AD5M Pro |
