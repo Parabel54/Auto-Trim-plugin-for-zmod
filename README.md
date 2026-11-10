@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.9.6 (2026-11-08). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.9.7 (2026-11-09). For printers running Forge-X, use Auto Trim for Forge-X.
 
 Auto Trim sets the first-layer Z offset at the start of every print from a stored calibration, a per-filament adjustment and a bed measurement taken immediately before printing. Babystep corrections made during the first layer are stored and applied to later prints.
 
@@ -18,27 +18,21 @@ Auto Trim sets the first-layer Z offset at the start of every print from a store
 - Detailed console output: every measurement, the offset breakdown and every learned change is printed.
 - Leaves the offset at 0 after every finished print.
 
-## Defaults in 3.9.6
+## Probe speed and wipes
 
-This is a config-only update to the GitHub 3.9.4 package: replace `auto_trim.cfg` and restart Klipper. No Python modules, shell installer, Deep Calibration package or extra calibration/mesh script is required. If another config later defines these same speed settings, include Auto Trim after that config or remove the conflicting overrides.
+**Probe speed.** Every bed mesh probes at 1 mm/s (`probe_speed`): Auto Trim's KAMP and full meshes, meshes started by zMod, and KAMP, which passes no speed of its own. Auto Trim's bed-check probes use it too. Only the probing move down is slower. Travel, lifts, homing and zMod's other probing keep their speeds. Set `probe_speed` to `0` for Klipper's own probe speed.
 
-- Native bed probing defaults to **1 mm/s throughout**, including KAMP, full meshes, probe accuracy tests and screw measurements. Auto Trim full-mesh and check-point commands also explicitly request 1 mm/s. Native KAMP drops command parameters, so it inherits the `[probe] speed: 1` setting rather than relying on a forwarded parameter.
-- Z homing defaults to **1 mm/s on both touches**. This also applies to probe-based homing through g28_tenz. XY homing is unchanged.
-- Lift speed remains **5 mm/s**. Sample counts, sample tolerance, retract distance and Z offsets are unchanged.
-- AD5X intermediate cooling wipes happen every **70 C** by default. The hot post-purge wipe and final cool wipe still run; a 230 -> 121 C cooldown adds one intermediate wipe at 160 C.
-- AD5X rubber wipes use only **four alternating X sweeps at 100 mm/s**, retaining the slower zMod pass's X65/X81 endpoints. The stock three chute-knocking cycles (Y in/out at F5000) are retained before the gentle side-to-side sweeps. The fast X shaking and velocity/acceleration boosts are omitted. The rubber entry/exit corridor and the stock pre-slow-pass 2 mm retraction are retained. Caller coordinate and extrusion modes are restored afterwards.
+This works by adding the speed to `_BED_MESH_CALIBRATE`, the command every zMod mesh goes through, when no speed is given. A `PROBE_SPEED=` given on a mesh command is kept. Auto Trim must be included after zMod's own configuration (`user.cfg`, as in the installation steps); otherwise Klipper reports that `_BED_MESH_CALIBRATE` was not found when it starts.
 
-These defaults require no additional slicer parameters. To choose the wipe behavior per print, append to the existing `AUTO_TRIM_PREPARE` line:
+A load cell probe triggers at a slightly different height at another speed. After changing the probe speed (including the first time with 3.9.7), check the first layer and let Auto Trim re-learn: babystep the first print as usual.
+
+**Wipes (AD5X).** While the nozzle cools at the trash chute, it is wiped every 70 C (`cool_wipe_step`), as well as after the purge and at probing temperature. The wipe (`rubber_wipe: SOFT`) is zMod's: three knocks at the chute, then its slow side-to-side pass, without the fast shaking. `STOCK` uses zMod's full wipe. Per print, on the `AUTO_TRIM_PREPARE` line:
 
 ```gcode
 AUTO_TRIM_PREPARE MATERIAL={filament_type[initial_extruder]} COOL_WIPE_STEP=70 RUBBER_WIPE=SOFT
 ```
 
-For example, `COOL_WIPE_STEP=25 RUBBER_WIPE=STOCK` selects the previous interval and the installed zMod wipe. `COOL_WIPE_STEP=0` keeps only the hot and final cool wipes. An explicitly enabled zMod pre-clean (`zmod_preclean: KEEP`) runs before `AUTO_TRIM_PREPARE`, so it follows the configured `rubber_wipe` default rather than that later command's per-print override. The standard `CLEAN=ZMOD` cleaning path remains the installed native routine.
-
-The requested **5 -> 1 mm/s transition is not included**: Klipper cannot implement a monitored mid-approach speed transition through `[probe]` settings alone. This version uses the selected config-only alternative, 1 mm/s for the entire probe descent. Normal native commands can still explicitly override their speed; these are defaults, not a firmware speed lock. No Deep Calibration soak, live corrections or extra bed mesh is added to print startup.
-
-Validation: all macro templates compile, and offline render/regression checks cover the KAMP/full/saved routes, unchanged offset/learning macros, wipe thresholds, four-sweep path and optional wipe settings. This 3.9.6 configuration has not been physically tested on a printer.
+`COOL_WIPE_STEP=25 RUBBER_WIPE=STOCK` gives the wipes of 3.9.4; `COOL_WIPE_STEP=0` keeps only the wipes after the purge and at probing temperature. Every wipe retracts the filament 2 mm; when the nozzle is reheated, Auto Trim pushes back all of it, so the purge line starts with filament at the tip.
 
 ## Requirements
 

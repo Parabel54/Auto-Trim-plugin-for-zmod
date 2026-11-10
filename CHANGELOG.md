@@ -3,6 +3,18 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.9.7] - 2026-11-09
+
+### Changed
+- Probe speed 1 mm/s for every bed mesh (Auto Trim, zMod and KAMP) and Auto Trim's bed-check probes, through a new `probe_speed` setting (0 = Klipper's own speed). Travel, lifts, homing and zMod's other probing keep their stock speeds.
+
+### Fixed
+- 3.9.6 set `[probe]` and `[stepper_z]` from inside `auto_trim.cfg`: all probing at 1 mm/s, and Z homing at 1 mm/s. On the AD5X, Z homes to an endstop at the bottom (stock 20 mm/s), so each homing could take minutes. Both overrides are removed.
+- AD5X trash chute: the nozzle went to the chute right after homing, at its lowest height, before rising to Z 20. It now rises first, as zMod's own pre-clean does, also before the reheat.
+- Every rubber wipe retracts the filament 2 mm, but only the 3 mm retracted after the purge was pushed back at the reheat, so the purge line started with the filament several millimetres back. All of it is now pushed back.
+- `zmod_preclean: KEEP` runs zMod's own pre-clean sequence again (3.9.6 replaced its wipes).
+- Auto Trim for zMod installed on Forge-X stopped with `'...GetStatusWrapper object' has no attribute 'save_variables'`. It now says that Forge-X needs Auto Trim for Forge-X.
+
 ## [3.9.6] - 2026-11-08
 
 Config-only update based on the GitHub 3.9.4 package. No new Python modules or installer scripts.
