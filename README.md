@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.9.11 (2026-11-11). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.9.12 (2026-11-11). For printers running Forge-X, use Auto Trim for Forge-X.
 
 ## Contents
 
@@ -134,9 +134,9 @@ The first print sets the base offset of your printer. Use PLA and something with
 
 **1. Start the print.** After the mesh, the console shows the offset it starts with:
 ```
-AUTO TRIM: PLA offset = calibration 0.25 (default) + trim 0.0 + drift 0.0 = 0.25
+AUTO TRIM: PLA offset = calibration 0.0 (default) + trim 0.0 + drift 0.0 = 0.0
 ```
-`0.25` is a starting value (`default_calibration`), the same on every printer. Auto Trim does not take zMod's saved Z offset as a starting point: that value often comes from the stock firmware or the screen and changes with every babystep, so it says nothing reliable about the first layer.
+`0.0` is a starting value (`default_calibration`), the same on every printer. Measured AD5X calibrations are close to it (0.005 at the stock probe speed, -0.013 at 1 mm/s), so the first layer usually needs little or no babystepping. Auto Trim does not take zMod's saved Z offset as a starting point: that value often comes from the stock firmware or the screen and changes with every babystep, so it says nothing reliable about the first layer.
 
 **2. Watch the first layer** and adjust the nozzle height with babysteps of 0.01 to 0.02 mm (Fluidd, Mainsail or the screen) until it looks right. Hold each change for a few seconds of printing before judging it.
 
@@ -149,9 +149,9 @@ AUTO TRIM: PLA offset = calibration 0.25 (default) + trim 0.0 + drift 0.0 = 0.25
 **3. Keep printing.** When layer 3 starts, the correction is saved:
 ```
 AUTO TRIM: first 2 layers printed (now on layer 3), learning the first-layer offset
-AUTO TRIM: calibration 0.25 -> 0.23 (babysteps -0.02)
+AUTO TRIM: calibration 0.0 -> -0.02 (babysteps -0.02)
 ```
-At the end of the print the offset is set back to 0. Your next print starts at `0.23`.
+At the end of the print the offset is set back to 0. Your next print starts at `-0.02`.
 
 If you already know the right offset, you can set it before the first print:
 ```
@@ -575,7 +575,7 @@ In `AUTO_TRIM`:
 | Setting | Default | What it does |
 |---|---|---|
 | `baseline` | `pla` | The filament whose corrections change the calibration |
-| `default_calibration` | 0.25 | Starting offset for the first print, if nothing is saved |
+| `default_calibration` | 0.0 | Starting offset for the first print, if nothing is saved |
 | `min_offset` / `max_offset` | -0.8 / 0.8 | Safety limits for the final offset |
 | `seed_trims` | see [Starting adjustments](#starting-adjustments-per-filament) | Starting adjustment for each filament |
 | `drift_learn_rate` | 0.5 | With the bed check: how far each print's drift moves the learned value (0.5 = halfway) |

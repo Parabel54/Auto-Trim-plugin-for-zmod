@@ -3,6 +3,11 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.9.12] - 2026-11-11
+
+### Fixed
+- The starting calibration (`default_calibration`) was 0.25 mm, so a first print, or one after a reset, started about a quarter of a millimetre too high and the first layer did not stick. Measured AD5X calibrations are close to 0 (0.005 at the stock probe speed, -0.013 at 1 mm/s). The default is now 0.0. Printers with a saved calibration are not affected.
+
 ## [3.9.11] - 2026-11-11
 
 ### Fixed
