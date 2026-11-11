@@ -3,6 +3,11 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.9.11] - 2026-11-11
+
+### Fixed
+- Without a saved calibration (a first print, or after a reset), Auto Trim took zMod's global Z offset as the starting calibration (`from existing zMod offset`). That value often comes from the stock firmware or the screen, and zMod saves every offset change into it (babysteps, and Auto Trim's own offset when a print is cancelled), so prints could start far from the right height. The first print now always starts from `default_calibration` (0.25) and learns from your babysteps. The `unset_below` setting is removed.
+
 ## [3.9.10] - 2026-11-11
 
 ### Fixed

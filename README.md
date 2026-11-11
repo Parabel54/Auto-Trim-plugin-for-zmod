@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.9.10 (2026-11-11). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.9.11 (2026-11-11). For printers running Forge-X, use Auto Trim for Forge-X.
 
 ## Contents
 
@@ -48,7 +48,7 @@ Example: a PLA first layer looks slightly high, and you lower the nozzle by 0.02
 |---|---|
 | Printer | Flashforge AD5X, AD5M or AD5M Pro |
 | Firmware | [zMod](https://github.com/ghzserg/zmod) 1.7.1 or newer. Works with zMod 1.7.5 (see [zMod 1.7.5](#zmod-175)) |
-| Tested on | AD5X with Flashforge firmware 3.1.0 and zMod 1.7.5 |
+| Tested on | AD5X with Flashforge firmware 3.1.0 and zMod 1.7.5. Auto Trim for Forge-X: AD5M with Flashforge firmware 5.1.1 and Forge-X 1.4.2 beta |
 | Screen | GuppyScreen or HelixScreen. With the native Flashforge screen, zMod hands prints to the Flashforge firmware, which Auto Trim does not support |
 | Slicer | OrcaSlicer. Any slicer works if it can fill in the same values; the G-code below uses OrcaSlicer placeholders |
 | Slicer setting | Label objects turned on (recommended), so the mesh and the purge line can be placed around your parts |
@@ -136,7 +136,7 @@ The first print sets the base offset of your printer. Use PLA and something with
 ```
 AUTO TRIM: PLA offset = calibration 0.25 (default) + trim 0.0 + drift 0.0 = 0.25
 ```
-`0.25` is a starting value. If zMod already had an offset saved, Auto Trim starts from that instead and says `(from existing zMod offset)`.
+`0.25` is a starting value (`default_calibration`), the same on every printer. Auto Trim does not take zMod's saved Z offset as a starting point: that value often comes from the stock firmware or the screen and changes with every babystep, so it says nothing reliable about the first layer.
 
 **2. Watch the first layer** and adjust the nozzle height with babysteps of 0.01 to 0.02 mm (Fluidd, Mainsail or the screen) until it looks right. Hold each change for a few seconds of printing before judging it.
 
@@ -577,7 +577,6 @@ In `AUTO_TRIM`:
 | `baseline` | `pla` | The filament whose corrections change the calibration |
 | `default_calibration` | 0.25 | Starting offset for the first print, if nothing is saved |
 | `min_offset` / `max_offset` | -0.8 / 0.8 | Safety limits for the final offset |
-| `unset_below` | 0.01 | Saved zMod offsets closer to 0 than this are treated as "never set" |
 | `seed_trims` | see [Starting adjustments](#starting-adjustments-per-filament) | Starting adjustment for each filament |
 | `drift_learn_rate` | 0.5 | With the bed check: how far each print's drift moves the learned value (0.5 = halfway) |
 | `drift_jump` | 0.1 | With the bed check: how far from normal the drift may be before a notice |
@@ -625,7 +624,7 @@ In `AUTO_TRIM_PREPARE`:
 
 Notes:
 - Values are stored in zMod's existing `[save_variables]` section. Do not add a second one.
-- `LOAD_ZOFFSET` in zMod can be on or off. Auto Trim sets the offset itself on every print; zMod's saved offset only matters as a starting point for the very first print.
+- `LOAD_ZOFFSET` in zMod can be on or off. Auto Trim sets the offset itself on every print, and never uses zMod's saved offset.
 - On multi-colour AD5X prints, the adjustment follows the filament in the first slot used, since that one prints the first layer.
 - Filament names come from the OrcaSlicer filament type, lowercased, with `-` turned into `_` (`PLA-CF` is stored as `pla_cf`).
 
