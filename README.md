@@ -48,6 +48,7 @@ Example: a PLA first layer looks slightly high, and you lower the nozzle by 0.02
 |---|---|
 | Printer | Flashforge AD5X, AD5M or AD5M Pro |
 | Firmware | [zMod](https://github.com/ghzserg/zmod) 1.7.1 or newer. Works with zMod 1.7.5 (see [zMod 1.7.5](#zmod-175)) |
+| Tested on | AD5X with Flashforge firmware 3.1.0 and zMod 1.7.5 |
 | Screen | GuppyScreen or HelixScreen. With the native Flashforge screen, zMod hands prints to the Flashforge firmware, which Auto Trim does not support |
 | Slicer | OrcaSlicer. Any slicer works if it can fill in the same values; the G-code below uses OrcaSlicer placeholders |
 | Slicer setting | Label objects turned on (recommended), so the mesh and the purge line can be placed around your parts |
