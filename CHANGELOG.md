@@ -3,6 +3,12 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.9.9] - 2026-11-11
+
+### Fixed
+- `SOAK=AUTO` waited only for the centre of the bed, although the soak calibration also measures points near the corners, which can settle later. It now waits for the slowest measured point.
+- A measured soak was cut to `soak_max` (600 s), the limit meant for the per-degree estimate, so a bed that takes longer to settle was probed too early even after calibrating. A measured soak now has its own limit, `soak_cal_max` (2700 s).
+
 ## [3.9.8] - 2026-11-10
 
 ### Added

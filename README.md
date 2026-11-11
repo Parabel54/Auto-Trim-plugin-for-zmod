@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.9.8 (2026-11-10). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.9.9 (2026-11-11). For printers running Forge-X, use Auto Trim for Forge-X.
 
 Auto Trim sets the first-layer Z offset at the start of every print from a stored calibration, a per-filament adjustment and a bed measurement taken immediately before printing. Babystep corrections made during the first layer are stored and applied to later prints.
 
@@ -38,7 +38,7 @@ AUTO_TRIM_PREPARE MATERIAL={filament_type[initial_extruder]} COOL_WIPE_STEP=70 R
 
 After the bed sensor reaches its target, the plate keeps warming and moving for several minutes. A soak waits for that before the mesh is probed. It is off by default (`soak: OFF`). Turn it on with `SOAK=` on the `AUTO_TRIM_PREPARE` line, or by changing `soak`:
 
-- `SOAK=AUTO` soaks the time measured for the nearest calibrated bed temperature, scaled by how far the bed rose. Without a calibration it soaks 3 s per degree risen (`soak_per_degree`), at most 600 s (`soak_max`). A bed that started within 5 C of its target needs no soak, and time already spent hot (nozzle clean, cooling) counts.
+- `SOAK=AUTO` soaks the time measured for the nearest calibrated bed temperature, for the slowest of the measured points (centre or corners), scaled by how far the bed rose, up to 2700 s (`soak_cal_max`). Without a calibration it soaks 3 s per degree risen (`soak_per_degree`), at most 600 s (`soak_max`). A bed that started within 5 C of its target needs no soak, and time already spent hot (nozzle clean, cooling) counts.
 - `SOAK=300` soaks that many seconds. `SOAK=OFF` none.
 
 **Measuring the soak.** From a cold bed (below 40 C):
@@ -504,6 +504,7 @@ In `AUTO_TRIM_PREPARE`:
 | `probe_speed` | 1 mm/s | Probe speed for every bed mesh (zMod, KAMP, Auto Trim) and Auto Trim's probes. 0 = Klipper's own speed |
 | `soak` | `OFF` | Bed heat soak before probing: `OFF`, `AUTO` (measured, or per degree risen) or seconds |
 | `soak_per_degree` / `soak_max` | 3 s / 600 s | `SOAK=AUTO` without a calibration: seconds per degree risen, and the most |
+| `soak_cal_max` | 2700 s | `SOAK=AUTO` with a calibration: the longest soak taken from it |
 | `rubber_wipe` | `SOFT` | AD5X: stock chute knocking, then four gentle alternating X sweeps from the slower rubber pass. `STOCK` calls the installed zMod wipe instead |
 | `zmod_preclean` | `SKIP` | AD5X: `SKIP` the zMod nozzle pre-clean inside `START_PRINT` (Auto Trim cleans the nozzle itself), or `KEEP` it. `KEEP` runs a copy of the zMod 1.7 sequence, so check it after a zMod update |
 | `restore_tip` | automatic | Filament pushed back to the nozzle tip after reheating, in mm. Automatic: 3 on the AD5X (its clean retracts 3 mm), 0 on the AD5M and AD5M Pro |
