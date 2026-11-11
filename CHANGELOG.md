@@ -3,6 +3,11 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.9.10] - 2026-11-11
+
+### Fixed
+- `SOAK=AUTO` did not count the time the bed had already been hot during the nozzle clean (the console said `0 s covered by the nozzle clean`), so prints waited the full soak on top of the clean. The time from the start of `AUTO_TRIM_PREPARE`, when `START_PRINT` has finished heating the bed, now counts. Prints wait less; never less than the soak needs.
+
 ## [3.9.9] - 2026-11-11
 
 ### Fixed
