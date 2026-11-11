@@ -254,7 +254,7 @@ The zMod stock Flashforge line-clears (`_CLEAR1` to `_CLEAR4`) draw their line o
 
 ## Saved mesh instead of probing
 
-For large prints, probing a fresh mesh takes several minutes (about 6.6 seconds per point on an AD5X, so about 5.5 minutes for a full 7 x 7 mesh). `MESH=SAVED` skips it: Auto Trim loads a saved full-bed mesh and probes only 5 points, at the corners and centre of the print area, to measure how far the whole bed has moved since the mesh was saved. That shift is applied to the Z offset.
+For large prints, probing a fresh mesh takes several minutes (about 6.6 seconds per point on an AD5X at the stock probe speed, so about 5.5 minutes for a full 7 x 7 mesh, and longer at the 1 mm/s `probe_speed`). `MESH=SAVED` skips it: Auto Trim loads a saved full-bed mesh and probes only 5 points, at the corners and centre of the print area, to measure how far the whole bed has moved since the mesh was saved. That shift is applied to the Z offset.
 
 ```
 AUTO TRIM: loaded saved mesh 'auto' instead of probing
@@ -269,7 +269,7 @@ If the saved mesh no longer fits the bed, a fresh KAMP mesh is built automatical
 
 Setting it up:
 1. Heat the bed to the temperature you normally print at and let it settle for a few minutes. The bed changes shape slightly with temperature.
-2. Run a full bed leveling from the zMod menu or `AUTO_FULL_BED_LEVEL`. zMod saves it as the profile `auto`.
+2. Run a full bed leveling from the zMod menu or `AUTO_FULL_BED_LEVEL`. zMod saves it as the profile `auto`. Or, from a cold bed, `AUTO_TRIM_MESH_CALIBRATE BED=<temperature>`: it measures the bed soak first, probes the full mesh once the bed has settled, saves it as `auto` and runs `SAVE_CONFIG` (steps 1 to 3 in one; see Bed heat soak).
 3. Run `SAVE_CONFIG` so the mesh survives a restart.
 
 Redo this after changing plates or re-levelling the bed screws. `saved_profile` selects a different profile name.
@@ -278,6 +278,34 @@ Redo this after changing plates or re-levelling the bed screws. `saved_profile` 
 ```
 AUTO TRIM: preparing (SAVED mesh (AUTO: KAMP would need 25 points), TRASH clean, print 220/60 C)
 ```
+
+### KAMP, AUTO or SAVED: which to choose
+
+The `MESH=` option on the `AUTO_TRIM_PREPARE` line decides how the bed is measured for each print. Auto Trim does not make the mesh itself: it runs zMod's KAMP, or its full-bed mesh, at the right moment (after the nozzle clean and the bed soak, at probing temperature and `probe_speed`) and checks the result.
+
+| Option | What happens |
+|---|---|
+| none, or `MESH=KAMP` (default) | A fresh adaptive mesh of the print area for every print (zMod KAMP) |
+| `MESH=FULL` | A fresh full-bed mesh for every print |
+| `MESH=SAVED` | The saved mesh, checked at 5 points instead of probed |
+| `MESH=AUTO` | KAMP for small prints, the saved mesh for large ones |
+
+How `MESH=AUTO` decides:
+1. It works out how many points a KAMP mesh would probe: the print area, at the point spacing of the `probe_count` in your printer config.
+2. More than 16 points (`auto_kamp_points`) and a saved mesh exists: the saved mesh, with its 5-point check. Without a saved mesh: KAMP.
+3. 16 points or fewer: KAMP.
+
+For example, with a 7 x 7 `probe_count` (points about 36 mm apart on an AD5X):
+
+| Print | A KAMP mesh would need | `MESH=AUTO` uses |
+|---|---|---|
+| a 60 x 40 mm part | 3 x 3 = 9 points | KAMP |
+| a 150 x 150 mm part | 6 x 6 = 36 points | the saved mesh (5-point check) |
+
+Which to choose:
+- `KAMP` is the most accurate for each print, because the mesh is always fresh. Large prints take longer to probe, especially at 1 mm/s.
+- `AUTO` is about as accurate for small prints and much faster for large ones, as long as the saved mesh was made in the same conditions: the same bed temperature, on a soaked bed (`AUTO_TRIM_MESH_CALIBRATE` does both). If the bed has changed, the 5-point check notices and a fresh KAMP mesh is probed anyway.
+- `SAVED` always uses the saved mesh, whatever the print size.
 
 ## Ongoing use
 
