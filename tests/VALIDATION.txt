@@ -1,0 +1,93 @@
+...................................ERROR:root:deep_calibration: capture error
+Traceback (most recent call last):
+  File "/workspace/work/deep-beta5-restored-approach/deep_calibration_development_beta/deep_calibration.py", line 418, in _tick
+    context = self._context(now)
+              ^^^^^^^^^^^^^^^^^^
+  File "/workspace/work/deep-beta5-restored-approach/deep_calibration_development_beta/deep_calibration.py", line 346, in _context
+    position = list(th.get_position())
+                    ^^^^^^^^^^^^^^^^^
+  File "/workspace/work/deep-beta5-restored-approach/deep_calibration_development_beta/tests/test_capture.py", line 248, in <lambda>
+    self.objects['toolhead'].get_position=lambda:(_ for _ in ()).throw(RuntimeError('bad status'))
+                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/work/deep-beta5-restored-approach/deep_calibration_development_beta/tests/test_capture.py", line 248, in <genexpr>
+    self.objects['toolhead'].get_position=lambda:(_ for _ in ()).throw(RuntimeError('bad status'))
+RuntimeError: bad status
+......WARNING:root:deep_calibration: no compatible native AD5X zmod_tenz parser; recording disabled
+............................ERROR:root:deep_calibration: capture error
+Traceback (most recent call last):
+  File "/workspace/work/deep-beta5-restored-approach/deep_calibration_development_beta/deep_calibration.py", line 427, in _tick
+    self.sensors.tick(now)
+  File "/workspace/work/deep-beta5-restored-approach/deep_calibration_development_beta/deep_calibration_sensors.py", line 249, in tick
+    if self.error:raise RuntimeError(self.error)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: ADC observer failure: expected batched ADC callback
+.ERROR:root:deep_calibration: capture error
+Traceback (most recent call last):
+  File "/workspace/work/deep-beta5-restored-approach/deep_calibration_development_beta/deep_calibration.py", line 427, in _tick
+    self.sensors.tick(now)
+  File "/workspace/work/deep-beta5-restored-approach/deep_calibration_development_beta/deep_calibration_sensors.py", line 249, in tick
+    if self.error:raise RuntimeError(self.error)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: ADC observer failure: ADC queue overflow
+....ERROR:root:deep_calibration: capture error
+Traceback (most recent call last):
+  File "/workspace/work/deep-beta5-restored-approach/deep_calibration_development_beta/deep_calibration.py", line 427, in _tick
+    self.sensors.tick(now)
+  File "/workspace/work/deep-beta5-restored-approach/deep_calibration_development_beta/deep_calibration_sensors.py", line 250, in tick
+    if self.adc_enabled:self._drain_adc(now)
+                        ^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/work/deep-beta5-restored-approach/deep_calibration_development_beta/deep_calibration_sensors.py", line 262, in _drain_adc
+    raise RuntimeError('ADC report gap detected: '+name)
+RuntimeError: ADC report gap detected: temperature_sensor filamentValue
+.ERROR:root:deep_calibration: capture error
+Traceback (most recent call last):
+  File "/workspace/work/deep-beta5-restored-approach/deep_calibration_development_beta/deep_calibration.py", line 427, in _tick
+    self.sensors.tick(now)
+  File "/workspace/work/deep-beta5-restored-approach/deep_calibration_development_beta/deep_calibration_sensors.py", line 249, in tick
+    if self.error:raise RuntimeError(self.error)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: native acceleration errors/overflows: 0/1
+.....ERROR:root:deep_calibration: capture error
+Traceback (most recent call last):
+  File "/workspace/work/deep-beta5-restored-approach/deep_calibration_development_beta/deep_calibration.py", line 427, in _tick
+    self.sensors.tick(now)
+  File "/workspace/work/deep-beta5-restored-approach/deep_calibration_development_beta/deep_calibration_sensors.py", line 250, in tick
+    if self.adc_enabled:self._drain_adc(now)
+                        ^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/work/deep-beta5-restored-approach/deep_calibration_development_beta/deep_calibration_sensors.py", line 259, in _drain_adc
+    if previous is not None and stamp<=previous:raise RuntimeError('ADC report repeated or reversed: '+name)
+                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: ADC report repeated or reversed: temperature_sensor filamentValue
+..ERROR:root:deep_calibration: capture error
+Traceback (most recent call last):
+  File "/workspace/work/deep-beta5-restored-approach/deep_calibration_development_beta/deep_calibration.py", line 427, in _tick
+    self.sensors.tick(now)
+  File "/workspace/work/deep-beta5-restored-approach/deep_calibration_development_beta/deep_calibration_sensors.py", line 249, in tick
+    if self.error:raise RuntimeError(self.error)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: acceleration stream stale or absent for more than 2 s
+...............................................................................................................................
+----------------------------------------------------------------------
+Ran 209 tests in 4.460s
+
+OK
+
+PASS: all config macro templates compile
+PASS: native probe and homing defaults 1; lift 5; sample/retract/offset settings untouched
+PASS: offset, calibration, material trim, learning and unrelated macros preserved byte for byte
+PASS: KAMP/full/saved/AUTO routes still build or load exactly one mesh and default to gentle 70 C wipes
+PASS: per-print wipe options forwarded to both cooling and reheat paths
+PASS: invalid wipe options rejected before any template commands execute
+PASS: 70 C thresholds at 220/230/300 C, hot/final wipes retained, no aggressive stock call by default
+PASS: zero wipe interval skips intermediate wipes only
+PASS: wipe retains three stock knocking cycles before four gentle sweeps, preserved 2 mm retract and restored G-code modes
+PASS: STOCK option delegates to installed zMod unchanged
+PASS: Auto Trim saved mesh verification uses five explicit 1 mm/s check probes
+PASS: saved-mesh mismatch still falls back to fresh KAMP using the native 1 mm/s default
+PASS: actual zMod KAMP template emits a native mesh without a speed override, inheriting [probe] speed 1
+
+13 check groups passed. Software rendering only; no printer execution.
+PASS: default startup uses verified soak then saved auto mesh, with DC startup takeover disabled
+PASS: already heated user can explicitly skip repeated thermal wait with DC_SOAK=OFF
+PASS: missing verified soak and active calibration are rejected by Auto Trim preparation
+Integrated total: 16 check groups passed

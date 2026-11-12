@@ -1,0 +1,16 @@
+run,changed,material,height,width,speed,fan,layers_to_observe,coupon_height,offset_order,note
+baseline_repeat_1,repeat,PLA,0.2,0.45,40,0,1,2,"GOOD,TOO_HIGH,GOOD,TOO_HIGH,GOOD",Keep GOOD offset fixed; use two printable TOO_HIGH offsets; hold >=20-30 s; keep temperatures/flow/PA/mesh/soak fixed
+baseline_repeat_2,repeat,PLA,0.2,0.45,40,0,1,2,"TOO_HIGH,GOOD,TOO_HIGH,GOOD,TOO_HIGH,GOOD",Keep GOOD offset fixed; use two printable TOO_HIGH offsets; hold >=20-30 s; keep temperatures/flow/PA/mesh/soak fixed
+baseline_repeat_3,repeat,PLA,0.2,0.45,40,0,1,2,"GOOD,TOO_HIGH,GOOD,TOO_HIGH,GOOD",Keep GOOD offset fixed; use two printable TOO_HIGH offsets; hold >=20-30 s; keep temperatures/flow/PA/mesh/soak fixed
+baseline_repeat_4,repeat,PLA,0.2,0.45,40,0,1,2,"TOO_HIGH,GOOD,TOO_HIGH,GOOD,TOO_HIGH,GOOD",Keep GOOD offset fixed; use two printable TOO_HIGH offsets; hold >=20-30 s; keep temperatures/flow/PA/mesh/soak fixed
+speed_20,speed,PLA,0.2,0.45,20,0,1,2,"GOOD,TOO_HIGH,GOOD,TOO_HIGH,GOOD",Keep GOOD offset fixed; use two printable TOO_HIGH offsets; hold >=20-30 s; keep temperatures/flow/PA/mesh/soak fixed
+speed_60,speed,PLA,0.2,0.45,60,0,1,2,"GOOD,TOO_HIGH,GOOD,TOO_HIGH,GOOD",Keep GOOD offset fixed; use two printable TOO_HIGH offsets; hold >=20-30 s; keep temperatures/flow/PA/mesh/soak fixed
+height_0.12,height,PLA,0.12,0.45,40,0,1,2,"GOOD,TOO_HIGH,GOOD,TOO_HIGH,GOOD",Keep GOOD offset fixed; use two printable TOO_HIGH offsets; hold >=20-30 s; keep temperatures/flow/PA/mesh/soak fixed
+height_0.16,height,PLA,0.16,0.45,40,0,1,2,"GOOD,TOO_HIGH,GOOD,TOO_HIGH,GOOD",Keep GOOD offset fixed; use two printable TOO_HIGH offsets; hold >=20-30 s; keep temperatures/flow/PA/mesh/soak fixed
+height_0.24,height,PLA,0.24,0.45,40,0,1,2,"GOOD,TOO_HIGH,GOOD,TOO_HIGH,GOOD",Keep GOOD offset fixed; use two printable TOO_HIGH offsets; hold >=20-30 s; keep temperatures/flow/PA/mesh/soak fixed
+width_0.4,width,PLA,0.2,0.4,40,0,1,2,"GOOD,TOO_HIGH,GOOD,TOO_HIGH,GOOD",Keep GOOD offset fixed; use two printable TOO_HIGH offsets; hold >=20-30 s; keep temperatures/flow/PA/mesh/soak fixed
+width_0.5,width,PLA,0.2,0.5,40,0,1,2,"GOOD,TOO_HIGH,GOOD,TOO_HIGH,GOOD",Keep GOOD offset fixed; use two printable TOO_HIGH offsets; hold >=20-30 s; keep temperatures/flow/PA/mesh/soak fixed
+fan_30,fan,PLA,0.2,0.45,40,30,1,2,"GOOD,TOO_HIGH,GOOD,TOO_HIGH,GOOD",Keep GOOD offset fixed; use two printable TOO_HIGH offsets; hold >=20-30 s; keep temperatures/flow/PA/mesh/soak fixed
+fan_60,fan,PLA,0.2,0.45,40,60,1,2,"GOOD,TOO_HIGH,GOOD,TOO_HIGH,GOOD",Keep GOOD offset fixed; use two printable TOO_HIGH offsets; hold >=20-30 s; keep temperatures/flow/PA/mesh/soak fixed
+fan_100,fan,PLA,0.2,0.45,40,100,1,2,"GOOD,TOO_HIGH,GOOD,TOO_HIGH,GOOD",Keep GOOD offset fixed; use two printable TOO_HIGH offsets; hold >=20-30 s; keep temperatures/flow/PA/mesh/soak fixed
+layer_background,layer,PLA,0.2,0.45,40,0,"1,2,3",2,"GOOD,TOO_HIGH,GOOD,TOO_HIGH,GOOD","Layer 2/3 characterize background, not nozzle-to-bed gap; set metadata on layer changes"

@@ -1,0 +1,86 @@
+solid deep_calibration_coupon
+  facet normal 0.0 0.0 -1.0
+    outer loop
+      vertex 0 0 0
+      vertex 205.0 205.0 0
+      vertex 205.0 0 0
+    endloop
+  endfacet
+  facet normal 0.0 0.0 -1.0
+    outer loop
+      vertex 0 0 0
+      vertex 0 205.0 0
+      vertex 205.0 205.0 0
+    endloop
+  endfacet
+  facet normal 0.0 0.0 1.0
+    outer loop
+      vertex 0 0 2.0
+      vertex 205.0 0 2.0
+      vertex 205.0 205.0 2.0
+    endloop
+  endfacet
+  facet normal 0.0 0.0 1.0
+    outer loop
+      vertex 0 0 2.0
+      vertex 205.0 205.0 2.0
+      vertex 0 205.0 2.0
+    endloop
+  endfacet
+  facet normal 0.0 -1.0 0.0
+    outer loop
+      vertex 0 0 0
+      vertex 205.0 0 0
+      vertex 205.0 0 2.0
+    endloop
+  endfacet
+  facet normal 0.0 -1.0 0.0
+    outer loop
+      vertex 0 0 0
+      vertex 205.0 0 2.0
+      vertex 0 0 2.0
+    endloop
+  endfacet
+  facet normal 1.0 0.0 0.0
+    outer loop
+      vertex 205.0 0 0
+      vertex 205.0 205.0 0
+      vertex 205.0 205.0 2.0
+    endloop
+  endfacet
+  facet normal 1.0 0.0 0.0
+    outer loop
+      vertex 205.0 0 0
+      vertex 205.0 205.0 2.0
+      vertex 205.0 0 2.0
+    endloop
+  endfacet
+  facet normal 0.0 1.0 0.0
+    outer loop
+      vertex 205.0 205.0 0
+      vertex 0 205.0 0
+      vertex 0 205.0 2.0
+    endloop
+  endfacet
+  facet normal 0.0 1.0 -0.0
+    outer loop
+      vertex 205.0 205.0 0
+      vertex 0 205.0 2.0
+      vertex 205.0 205.0 2.0
+    endloop
+  endfacet
+  facet normal -1.0 0.0 0.0
+    outer loop
+      vertex 0 205.0 0
+      vertex 0 0 0
+      vertex 0 0 2.0
+    endloop
+  endfacet
+  facet normal -1.0 0.0 0.0
+    outer loop
+      vertex 0 205.0 0
+      vertex 0 0 2.0
+      vertex 0 205.0 2.0
+    endloop
+  endfacet
+endsolid deep_calibration_coupon
