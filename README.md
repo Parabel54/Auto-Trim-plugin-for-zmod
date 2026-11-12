@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.9.12 (2026-11-11). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.9.13 (2026-11-12). For printers running Forge-X, use Auto Trim for Forge-X.
 
 ## Contents
 

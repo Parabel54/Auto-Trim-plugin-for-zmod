@@ -3,6 +3,12 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.9.13] - 2026-11-12
+
+### Fixed
+- `AUTO_TRIM_MESH_CALIBRATE` never got past the nozzle clean: it heated the nozzle and then waited forever, with the nozzle hot and nothing moving (Klipper's idle timeout does not switch the heater off while a command is waiting). The clean runs with the bed off, and still waited for the bed to reach that temperature within -3/+4 C, so for a bed at room temperature, to fall below 4 C. The clean now only waits for the bed when one is set.
+- `AUTO_TRIM_MESH_CALIBRATE` refuses an `EXTRUDER` below 170 C before heating: it is the print temperature for the nozzle clean, not the probing temperature.
+
 ## [3.9.12] - 2026-11-11
 
 ### Fixed
