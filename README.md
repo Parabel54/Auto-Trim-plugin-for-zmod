@@ -2,7 +2,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.7 (2026-11-12). **Development beta.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
+Version 0.1.0-beta.8 (2026-11-12). **Development beta.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
 
 ## Contents
 
@@ -189,39 +189,103 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 
 ## Knee search: finding the offset automatically
 
-Recordings show a clear pattern. Above a certain offset, the nozzle lays the line without pressing on it, and the load cell reads almost nothing. Below it, the force rises steeply. That point, the knee, is where the nozzle starts pressing the line into the bed. A good first layer sits just above it.
+Recordings show a clear pattern. Above a certain offset, the nozzle lays the line without pressing on it, and the load cell reads almost nothing. Below it, the force rises steeply. That point, the knee, is where the nozzle starts pressing the line into the bed. A good first layer sits just above it, by a small margin.
 
-`DEEP_CALIBRATION_KNEE` finds it during the first layer:
+`DEEP_CALIBRATION_KNEE` finds the knee during the first layer, then sets the offset the margin above it. Auto Trim learns that offset when layer 3 starts, like a babystep.
+
+### How it searches
 
 1. It raises the nozzle 0.10 mm above the offset Auto Trim set (`START`), where the force reads near zero.
-2. It lowers the nozzle 0.01 mm at a time (`STEP`), holding each step 8 seconds (`HOLD`) after the change reaches the nozzle, and takes the median force of the readings taken while printing.
-3. It compares each step with the few steps before it, never with a fixed value. The load cell drifts slowly (about 2 g per minute in recordings); comparing step to step makes that irrelevant.
-4. A step 12 g above the recent level (`RISE`) is a candidate. If the next step rises further, the candidate is the knee. A single high step that does not continue is ignored.
-5. The offset is set 0.025 mm above the knee (`MARGIN`) for the rest of the first layer. Auto Trim learns it when layer 3 starts, like a babystep.
+2. It lowers the nozzle 0.01 mm at a time (`STEP`). Each step is measured once the change has reached the nozzle (see [Timing](#timing)), using only the readings taken while printing.
+3. When a step rises clearly above the steps before it, and the next step rises further, the knee is between them.
+4. It steps back up until the force is flat again, to measure the knee from the other side.
+5. It fits the knee through all the steps, and sets the offset the margin above it.
 
-The console shows every step:
+The console shows every step, for example:
 ```
-DEEP CALIBRATION: knee search Z -0.150: 15.2 g (recent level 1.4 g, 26 readings)
-DEEP CALIBRATION: knee found at Z -0.150: the nozzle starts pressing the line there. Offset set to Z -0.125 (knee + 0.025); Auto Trim learns it when layer 3 starts.
+DEEP CALIBRATION: knee search started at Z 0.110 (0.100 above Z 0.010), stepping down 0.010 mm; margin 0.025 (default)
+DEEP CALIBRATION: knee search Z -0.120: 1.4 g (recent level -5.7 g, rise needed 15.9 g, +/-1.8 g, 26 readings)
+DEEP CALIBRATION: knee going down at Z -0.1365; stepping back up to confirm it
+DEEP CALIBRATION: knee check going up Z -0.130: 2.1 g (flat)
+DEEP CALIBRATION: knee found at Z -0.1362 (down -0.1365, up -0.1358, repeatability 0.0007 mm): the nozzle starts pressing the line there. Offset set to Z -0.1112 (knee + 0.025, default); Auto Trim learns it when layer 3 starts.
 ```
 
-**Safety:**
+### How long each step takes (adaptive hold)
+
+The load cell reports about 3 times a second, and each reading is noisy, so one step needs many readings. Each step lasts at least 6 seconds (`HOLD`). After that it ends as soon as its median force is known to within 2 g (`SE`), or at 20 seconds at most (`HOLD_MAX`). A quiet load cell gives short steps; a noisy one gets the time it needs. The console shows the precision of each step (`+/-1.8 g`).
+
+### When a rise counts (threshold from the noise)
+
+A step is compared with the median of the three flat steps before it, never with a fixed value: the load cell drifts slowly (about 2 g per minute in recordings), and comparing neighbouring steps makes that irrelevant.
+
+How big the rise must be is measured, not guessed. From the first flat steps, the search measures how much the step results jump from one step to the next, using the differences between neighbouring steps (so slow drift does not count as noise). The rise must then be 4 times that noise (`NOISE_K`), and at least 6 g (`RISE_MIN`). Until four flat steps exist, it uses 12 g (`RISE`).
+
+Example from a real 0.2 mm first layer: the step results wandered by about 4 g, so the rise needed was about 16 g. A step that recovered from a dip (from -15.5 g back to -2.2 g, a jump of 13 g) is no longer mistaken for a rise.
+
+A step that passes is a candidate. It only counts if the next step rises further (by half the threshold); a single high step that does not continue is ignored.
+
+### Where the knee is (fitted, not stepped)
+
+The step that first passes the threshold is not the knee itself: the rise starts somewhere above it, between steps, and with a gentle rise or a noisy load cell, the threshold may only be passed a step or two later. So the search fits a line through all its steps: flat down to the knee, then rising steadily below it. The knee is where the two meet, found to 0.0005 mm, anywhere from half a step below the candidate to two and a half steps above it. Steps with a more precise median count more.
+
+On the real 0.2 mm recording, the old rule put the knee at -0.150 (the first step over the threshold); the fit puts it at -0.136, and gives the same answer whichever step the threshold was passed at.
+
+### Measured from both directions (confirmation)
+
+After finding the knee going down, the search steps back up 0.01 mm at a time until two steps in a row are flat again (at most 4 steps above the knee). It fits the knee again from that side, using the deepest step as the start of the way up. The difference between the two is the repeatability of this search, shown in the console. If it is more than two steps, the console says the result is less certain. The knee used is the fit through all the steps, down and up.
+
+On the real 0.08 mm recording, where the nozzle went down and back up by hand, the knee was -0.1380 going down and -0.1325 going up: a repeatability of 0.0055 mm. `CONFIRM=0` skips the way up.
+
+### The margin above the knee (learned)
+
+The knee is where pressing starts; how far above it a good first layer sits depends on the filament, the first-layer height and your taste. The search uses a margin per filament and first-layer height (for example `PLA 0.20`), and learns it from you:
+
+- After a search, look at the first layer. If it is right, do nothing: nothing is learned, the margin stays.
+- If it is not, babystep it during the same first layer. When layer 2 starts, the offset you kept, minus the knee, is what this print wanted. The margin moves halfway towards it (`knee_learn_rate`).
+
+```
+DEEP CALIBRATION: knee margin for PLA 0.20 learned: you kept Z -0.0912, 0.0450 above the knee; margin 0.0250 -> 0.0350
+```
+
+The next search for that filament and height uses the learned margin (the console says `learned from 2 prints`). The margins are kept in `knee_margins.json` beside the recordings.
+
+`DEEP_CALIBRATION_KNEE_MARGIN` shows them. To change one by hand, for example when layer 2 scraped and the first layer should be higher:
+```gcode
+DEEP_CALIBRATION_KNEE_MARGIN MATERIAL=PLA HEIGHT=0.2 ADJUST=0.01
+DEEP_CALIBRATION_KNEE_MARGIN MATERIAL=PLA HEIGHT=0.2 MARGIN=0.03
+DEEP_CALIBRATION_KNEE_MARGIN MATERIAL=PLA HEIGHT=0.2 RESET=1
+```
+A `MARGIN=` on the knee search line is used for that search only, and nothing is learned from it.
+
+### Safety
 
 | If... | Then |
 |---|---|
-| A step is 80 g above the recent level (`MAX_FORCE`) | The search stops at once and backs off the same way |
+| A step is 80 g above the recent level (`MAX_FORCE`) | The search stops at once and sets the offset the margin above the knee found so far |
 | It has gone 0.35 mm down without a knee (`TRAVEL`) | It stops and puts the offset back where Auto Trim set it |
 | The first layer ends first | It stops and puts the offset back |
 | You run `DEEP_CALIBRATION_KNEE_ABORT` | It stops and puts the offset back |
 
-Its own steps are recorded as `knee_step` events and the result as `knee_result`, not as your too high or too close labels. Babysteps you make after the search has finished are labelled normally.
+Its own steps are recorded as `knee_step` events and the result as `knee_result`, not as your too high or too close labels. Babysteps you make after the search are labelled normally.
 
-**Using it:** `DEEP_CALIBRATION_KNEE ARM=1` on the start G-code, after `DEEP_CALIBRATION_ARM`. It starts 3 seconds into the first layer and takes about 25 steps of 10 seconds, so the first layer needs to last several minutes. Options go on the same line, for example `DEEP_CALIBRATION_KNEE ARM=1 RISE=15 MARGIN=0.03`. During a first layer that is already recording, `DEEP_CALIBRATION_KNEE` without `ARM` starts it at once.
+### Using it
 
-**Choosing the settings:**
-- **`RISE`:** in a 0.2 mm first layer the force wandered by about 12 g before the knee. 12 g worked, with little room; 15 to 18 g is safer for thick first layers.
-- **`MARGIN`:** 0.025 mm comes from one printer at a 0.08 mm first layer. Check the first layer after a search; if it is consistently a little high or low, adjust the margin.
-- **Layer height:** the knee moves a little with the first-layer height (about -0.125 at 0.08 mm and -0.150 at 0.2 mm on the first printer tested), so search at the height you print.
+`DEEP_CALIBRATION_KNEE ARM=1` on the start G-code, after `DEEP_CALIBRATION_ARM`. It starts 3 seconds into the first layer. A search takes about 25 to 30 steps of 6 to 20 seconds, so the first layer needs to last several minutes: a large flat square works well. Search at the first-layer height you print: the knee moves a little with it (about -0.13 at 0.08 mm and -0.14 at 0.2 mm on the first printer tested).
+
+| Option | Default | What it does |
+|---|---|---|
+| `START` | 0.10 | How far above Auto Trim's offset it starts (mm) |
+| `STEP` | 0.01 | Step size (mm) |
+| `HOLD` / `HOLD_MAX` | 6 / 20 | Shortest and longest step (s) |
+| `SE` | 2 | Precision a step aims for (g) |
+| `RISE` | 12 | Rise needed until the noise is known (g) |
+| `NOISE_K` / `RISE_MIN` | 4 / 6 | Rise needed: this many times the noise, and at least this (g) |
+| `MARGIN` | learned, or 0.025 | Offset set this far above the knee (mm); on the line, used once and not learned |
+| `CONFIRM` | 1 | Step back up to measure the knee from both sides |
+| `MAX_FORCE` | 80 | Rise that stops the search at once (g) |
+| `TRAVEL` | 0.35 | Furthest it goes below its start (mm) |
+
+During a first layer that is already recording, `DEEP_CALIBRATION_KNEE` without `ARM` starts it at once.
 
 ## Guarded approach
 
@@ -335,6 +399,7 @@ Other tools:
 
 From one AD5X, PLA, first layers of 0.08 and 0.2 mm:
 
+- **The knee can be measured to a fraction of a step.** Fitted through all the steps, the knee of a real 0.2 mm search came out at -0.136, whichever step the threshold was passed at; measured going down and back up on a 0.08 mm first layer, the two sides agreed to 0.0055 mm.
 - **The load cell sees the nozzle pressing.** The force stays near zero until the nozzle starts pressing the line, then rises steeply: about 100 g over 0.04 mm at a 0.08 mm first layer, about 22 g over 0.02 mm at 0.2 mm. Moving back up brings the force back down, so it is the height, not time.
 - **It cannot tell "right" from "too high".** Both read near zero. That is why the knee search looks for the start of the rise and backs off by a margin, instead of aiming for a force.
 - **The load cell drifts slowly,** about 2 g per minute at a fixed offset. Steps compared with each other are not affected; an absolute force target would be.
@@ -348,6 +413,7 @@ From one AD5X, PLA, first layers of 0.08 and 0.2 mm:
 | `DEEP_CALIBRATION_DISARM` | Cancels `ARM` before the first layer starts |
 | `DEEP_CALIBRATION_KNEE` | Knee search; `ARM=1` waits for the first layer |
 | `DEEP_CALIBRATION_KNEE_ABORT` | Stops the knee search and puts the offset back |
+| `DEEP_CALIBRATION_KNEE_MARGIN` | Shows the learned knee margins; with `MATERIAL=` and `HEIGHT=`, `MARGIN=`, `ADJUST=` or `RESET=1` changes one |
 | `DEEP_CALIBRATION_MARK LABEL=<label>` | Labels the current offset by hand |
 | `DC_MARK_GOOD` | `MARK LABEL=GOOD` |
 | `DEEP_CALIBRATION_START` / `STOP` / `SET` / `ZERO` | Recording by hand (see [Recording by hand](#recording-by-hand)) |
@@ -369,11 +435,16 @@ In `[deep_calibration]` in `deep_calibration.cfg`:
 | `auto_adjust_labels` | True | Babysteps label the offset before them |
 | `knee_start` | 0.10 | Knee search: how far above Auto Trim's offset it starts (mm) |
 | `knee_step` | 0.01 | Step size (mm) |
-| `knee_hold` | 8 | Seconds per step, after the change reaches the nozzle |
-| `knee_rise_g` | 12 | Rise above the recent level that makes a candidate (g) |
-| `knee_margin` | 0.025 | Offset set this far above the knee (mm) |
+| `knee_hold` / `knee_hold_max` | 6 / 20 | Shortest and longest step (s) |
+| `knee_se_g` | 2 | Precision a step aims for (g) |
+| `knee_rise_g` | 12 | Rise needed until the noise is known (g) |
+| `knee_noise_k` / `knee_rise_min_g` | 4 / 6 | Rise needed: this many times the measured noise, and at least this (g) |
+| `knee_margin` | 0.025 | Margin above the knee until one is learned (mm) |
+| `knee_learn_rate` | 0.5 | How far each print moves the learned margin towards what you kept |
+| `knee_confirm` | True | Step back up to measure the knee from both sides |
 | `knee_max_force_g` | 80 | Rise that stops the search at once (g) |
 | `knee_max_travel` | 0.35 | Furthest it goes below its start (mm) |
+| `knee_min_readings` | 8 | Fewest readings a step needs |
 | `log_directory` | `mod_data/deep_calibration_data` | Where recordings are saved |
 | `context_interval` | 0.1 | Seconds between position and state snapshots |
 | `filter_tau` | 0.5 | Smoothing of the live load cell value (s) |
@@ -386,7 +457,7 @@ In `[deep_calibration_approach]`: `approach_speed` (5 mm/s), `slow_clearance` (1
 
 ## Limits
 
-- **A development beta, used on one printer.** The knee search, the labels and the analysis are built on recordings from one AD5X, with PLA.
+- **A development beta, used on one printer.** The knee search, the labels and the analysis are built on recordings from one AD5X, with PLA. The fitted knee, the noise-based threshold, the adaptive hold and the margin learning were checked against those recordings and in tests, not yet in a full search on the printer.
 - **Labels are your judgement.** The automatic `GOOD` means "kept", not "confirmed"; a first layer can look right and still be too close.
 - **The load cell reads in raw counts** unless `counts_per_gram` is set; the knee search's gram values assume about 43 counts per gram.
 - **The guarded approach depends on Klipper's probe code** and can stop Klipper from starting after a zMod update (see above).

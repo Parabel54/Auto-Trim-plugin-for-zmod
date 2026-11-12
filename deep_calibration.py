@@ -20,7 +20,7 @@ except ImportError:
     from deep_calibration_sensors import SensorExtension
     from deep_calibration_mesh import DeepCalibrationMesh
 
-VERSION = '0.1.0-beta.7'
+VERSION = '0.1.0-beta.8'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -191,12 +191,21 @@ class DeepCalibration:
         self.knee_cfg = dict(
             start=config.getfloat('knee_start', .10, minval=0., maxval=.5),
             step=config.getfloat('knee_step', .01, minval=.002, maxval=.05),
-            hold=config.getfloat('knee_hold', 8., minval=2., maxval=60.),
+            hold=config.getfloat('knee_hold', 6., minval=2., maxval=60.),
+            hold_max=config.getfloat('knee_hold_max', 20., minval=2., maxval=120.),
+            se=config.getfloat('knee_se_g', 2., minval=.1, maxval=50.),
             rise=config.getfloat('knee_rise_g', 12., minval=1., maxval=500.),
+            rise_min=config.getfloat('knee_rise_min_g', 6., minval=1., maxval=500.),
+            noise_k=config.getfloat('knee_noise_k', 4., minval=1., maxval=20.),
             margin=config.getfloat('knee_margin', .025, minval=0., maxval=.2),
             max_force=config.getfloat('knee_max_force_g', 80., minval=5., maxval=2000.),
             travel=config.getfloat('knee_max_travel', .35, minval=.02, maxval=1.),
-            min_readings=config.getint('knee_min_readings', 8, minval=3, maxval=200))
+            min_readings=config.getint('knee_min_readings', 8, minval=3, maxval=200),
+            confirm=config.getboolean('knee_confirm', True),
+            learn_rate=config.getfloat('knee_learn_rate', .5, minval=0., maxval=1.))
+        # Learned margins per material and first-layer height
+        self.knee_margin_file = os.path.join(self.directory, 'knee_margins.json')
+        self.knee_last = None
         self.knee = None
         self.context_id = 0
         self.last_signature = None
@@ -214,7 +223,7 @@ class DeepCalibration:
         self.printer.register_event_handler('klippy:shutdown', self._shutdown)
         self.printer.register_event_handler('klippy:disconnect', self._disconnect)
         self.timer = self.reactor.register_timer(self._tick)
-        for name in ('START','STOP','STATUS','MARK','SET','ZERO','ARM','DISARM','KNEE','KNEE_ABORT'):
+        for name in ('START','STOP','STATUS','MARK','SET','ZERO','ARM','DISARM','KNEE','KNEE_ABORT','KNEE_MARGIN'):
             self.gcode.register_command('DEEP_CALIBRATION_'+name, getattr(self, 'cmd_'+name))
 
     def _install_adjustment_observer(self):
@@ -268,11 +277,13 @@ class DeepCalibration:
         at = self._status('gcode_macro AUTO_TRIM', now)
         layer = (ps.get('info') or {}).get('current_layer')
         knee = getattr(self, 'knee', None)
-        if knee is not None and knee['phase'] in ('wait', 'step') and knee.get('own_move'):
+        if knee is not None and knee['phase'] in ('wait', 'down', 'up') and knee.get('own_move'):
             # The knee search's own step: recorded as a search step, not a label
             knee['own_move'] = False
             self.adjustment_since = effect
             return
+        if knee is None and getattr(self, 'knee_last', None) is not None and not self.knee_last.get('user_adjusted'):
+            self.knee_last['user_adjusted'] = True
         # Commands are read in order: a babystep read after layer 2 was
         # announced changes layer 2 moves, so it belongs to layer 2. Its
         # effect starts when the moves queued before it have printed.
@@ -530,7 +541,7 @@ class DeepCalibration:
                                  0<=now-stamp<=.35 and finite(velocity) and abs(velocity)<.05
                                  and finite(ev) and abs(ev)<.01 and abs(grams)<=5120))
             k = self.knee
-            if k is not None and k['phase'] == 'step' and k['window'][0] <= stamp <= k['window'][1]:
+            if k is not None and k['phase'] in ('down', 'up') and stamp >= k['window'][0]:
                 mot = self._motion_at(stamp)
                 kev = mot.get('live_extruder_velocity'); kv = mot.get('live_velocity')
                 if finite(kev) and finite(kv) and kev > .2 and kv > 10 and abs(grams) <= 5120:
@@ -667,6 +678,9 @@ class DeepCalibration:
     # ------------------------------------------------------------------
     # Knee search
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Knee search helpers
+    # ------------------------------------------------------------------
     def _knee_offset(self, context):
         # Read live: a step moved since the last snapshot must not be missed
         live = self._status('gcode_move', self.reactor.monotonic()).get('homing_origin')
@@ -684,25 +698,92 @@ class DeepCalibration:
     def _knee_next_window(self, now):
         k = self.knee
         begin = now + self._queue_lead(now) + 1.5
-        k['window'] = [begin, begin + k['cfg']['hold']]
-        k['deadline'] = begin + 3 * k['cfg']['hold']
+        k['window'] = [begin, begin + k['cfg']['hold_max']]
         k['readings'] = []
 
+    @staticmethod
+    def _median(vals):
+        v = sorted(vals); n = len(v)
+        return v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2.
+
+    @staticmethod
+    def _hinge_fit(points, lo, hi, res=.0005):
+        """Fit force = b for z >= zk, b + s*(zk - z) below it (s > 0).
+        points: (z, g, weight). Returns (zk, b, s, sse) or None."""
+        if len(points) < 3:
+            return None
+        best = None
+        n = int(round((hi - lo) / res))
+        for i in range(n + 1):
+            zk = lo + i * res
+            sw = swx = swy = swxx = swxy = 0.
+            for z, g, w in points:
+                x = max(0., zk - z)
+                sw += w; swx += w * x; swy += w * g; swxx += w * x * x; swxy += w * x * g
+            det = sw * swxx - swx * swx
+            if det <= 1e-12:
+                continue
+            slope = (sw * swxy - swx * swy) / det
+            if slope <= 0:
+                continue
+            b = (swy - slope * swx) / sw
+            sse = sum(w * (g - b - slope * max(0., zk - z)) ** 2 for z, g, w in points)
+            if best is None or sse < best[3] - 1e-12:
+                best = (round(zk, 4), b, slope, sse)
+        return best
+
+    def _knee_noise(self, flat):
+        """Step-to-step noise of the flat steps, robust to slow drift:
+        consecutive differences, median absolute value, scaled to a standard
+        deviation (1.4826 / sqrt(2))."""
+        if len(flat) < 4:
+            return None
+        diffs = [abs(flat[i] - flat[i - 1]) for i in range(1, len(flat))]
+        return 1.4826 * self._median(diffs) / 2 ** .5
+
+    def _knee_key(self):
+        r = self.recipe or {}
+        return '%s_%.2f' % (str(r.get('material', 'PLA')).lower().replace('-', '_').replace(' ', '_'), float(r.get('height', .2)))
+
+    def _knee_margins(self):
+        try:
+            with open(self.knee_margin_file) as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _knee_save_margins(self, data):
+        tmp = self.knee_margin_file + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(data, f, indent=1, sort_keys=True)
+        os.replace(tmp, self.knee_margin_file)
+
+    # ------------------------------------------------------------------
+    # Knee search
+    # ------------------------------------------------------------------
     def _knee_begin(self, now, context):
         k = self.knee
         k['original'] = self._knee_offset(context)
         k['offset'] = round(k['original'] + k['cfg']['start'], 4)
         k['floor'] = round(k['offset'] - k['cfg']['travel'], 4)
-        k['phase'] = 'step'
+        k['phase'] = 'down'
         k['steps'] = []
         k['candidate'] = None
+        k['key'] = self._knee_key()
+        if k.get('margin_fixed') is None:
+            m = self._knee_margins().get(k['key'])
+            k['margin'] = float(m['margin']) if m else k['cfg']['margin']
+            k['margin_src'] = ('learned from %d print%s' % (m['n'], '' if m['n'] == 1 else 's')) if m else 'default'
+        else:
+            k['margin'] = k['margin_fixed']; k['margin_src'] = 'set on the command'
         self._knee_move(k['cfg']['start'])
         self._knee_next_window(now)
-        self._event('knee_start', original=k['original'], start=k['offset'], floor=k['floor'], cfg=k['cfg'])
-        self.gcode.respond_info('DEEP CALIBRATION: knee search started at Z %.3f (%.3f above Z %.3f), stepping down %.3f mm every %.0f s'
-                                % (k['offset'], k['cfg']['start'], k['original'], k['cfg']['step'], k['cfg']['hold']))
+        self._event('knee_start', original=k['original'], start=k['offset'], floor=k['floor'], cfg=k['cfg'],
+                    key=k['key'], margin=k['margin'], margin_source=k['margin_src'])
+        self.gcode.respond_info('DEEP CALIBRATION: knee search started at Z %.3f (%.3f above Z %.3f), stepping down %.3f mm; margin %.3f (%s)'
+                                % (k['offset'], k['cfg']['start'], k['original'], k['cfg']['step'], k['margin'], k['margin_src']))
 
-    def _knee_stop(self, now, context, reason, restore=False, target=None, knee=None):
+    def _knee_stop(self, now, context, reason, restore=False, target=None, knee=None, extra=None):
         k = self.knee
         if k is None:
             return
@@ -712,16 +793,45 @@ class DeepCalibration:
         elif restore and k.get('original') is not None:
             self._knee_move(k['original'] - current)
         k['phase'] = 'done'
-        self._event('knee_result', reason=reason, knee=knee, target=target,
-                    original=k.get('original'), steps=k.get('steps', []))
+        result = dict(reason=reason, knee=knee, target=target, original=k.get('original'), steps=k.get('steps', []),
+                      key=k.get('key'), margin=k.get('margin'), margin_source=k.get('margin_src'))
+        result.update(extra or {})
+        self._event('knee_result', **result)
         if target is not None:
-            self.gcode.respond_info('DEEP CALIBRATION: knee found at Z %.3f: the nozzle starts pressing the line there. '
-                                    'Offset set to Z %.3f (knee + %.3f); Auto Trim learns it when layer 3 starts.'
-                                    % (knee, target, k['cfg']['margin']))
+            self.knee_last = dict(knee=knee, target=target, margin=k['margin'], key=k['key'],
+                                  fixed=k.get('margin_fixed') is not None, user_adjusted=False)
+            rep = (extra or {}).get('repeatability')
+            self.gcode.respond_info('DEEP CALIBRATION: knee found at Z %.4f%s: the nozzle starts pressing the line there. '
+                                    'Offset set to Z %.4f (knee + %.3f, %s); Auto Trim learns it when layer 3 starts.'
+                                    % (knee, (' (down %.4f, up %.4f, repeatability %.4f mm)' % (extra['knee_down'], extra['knee_up'], rep)) if rep is not None else '',
+                                       target, k['margin'], k['margin_src']))
+            if rep is not None and rep > 2 * k['cfg']['step']:
+                self.gcode.respond_info('DEEP CALIBRATION: !! the knee going down and going up differ by %.4f mm: this result is less certain. Check the first layer.' % rep)
         else:
             self.gcode.respond_info('DEEP CALIBRATION: knee search stopped (%s)%s' % (
                 reason, ', offset back to Z %.3f' % k['original'] if restore and k.get('original') is not None else ''))
         self.knee = None
+
+    def _knee_measure(self, now):
+        """The current step's median force in grams once it is precise enough:
+        at least HOLD seconds, then until its standard error is within knee_se_g
+        or HOLD_MAX is reached. Returns (g, n, se), 'wait', or 'skip'."""
+        k = self.knee
+        w0 = k['window'][0]
+        if now < w0 + k['cfg']['hold']:
+            return 'wait'
+        vals = k['readings']; n = len(vals)
+        cpg = self.cpg or 43.
+        if n >= k['cfg']['min_readings']:
+            med = self._median(vals)
+            sd = statistics.pstdev(vals) / cpg
+            se = 1.2533 * sd / n ** .5
+            if se <= k['cfg']['se'] or now >= w0 + k['cfg']['hold_max']:
+                if k.get('ref') is None:
+                    k['ref'] = med
+                return ((med - k['ref']) / cpg, n, se)
+            return 'wait'
+        return 'skip' if now >= w0 + k['cfg']['hold_max'] else 'wait'
 
     def _knee_tick(self, now, context):
         k = self.knee
@@ -732,7 +842,7 @@ class DeepCalibration:
             elif state in ('complete', 'cancelled', 'error'):
                 self._knee_stop(now, context, 'print ended before the first layer')
             return
-        if k['phase'] != 'step':
+        if k['phase'] not in ('down', 'up'):
             return
         if not self.active:
             return self._knee_stop(now, context, 'recording stopped', restore=True)
@@ -740,42 +850,108 @@ class DeepCalibration:
             return self._knee_stop(now, context, 'print not running', restore=True)
         if layer is not None and layer >= 2:
             return self._knee_stop(now, context, 'the first layer ended before a knee was found', restore=True)
-        if now < k['window'][1]:
+        m = self._knee_measure(now)
+        if m == 'wait':
             return
-        n = len(k['readings'])
-        if n < k['cfg']['min_readings']:
-            if now < k['deadline']:
-                return
-            self._event('knee_step', offset=k['offset'], readings=n, skipped=True)
-            self._knee_lower(now, context)
-            return
-        vals = sorted(k['readings'])
-        med = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2.
-        cpg = self.cpg or 43.
-        if k.get('ref') is None:
-            k['ref'] = med
-        g = (med - k['ref']) / cpg
-        recent = [s['g'] for s in k['steps'] if not s.get('candidate')][-3:]
-        base = sorted(recent)[len(recent) // 2] if recent else g
-        step = dict(offset=k['offset'], g=round(g, 2), base=round(base, 2), readings=n)
+        if m == 'skip':
+            self._event('knee_step', offset=k['offset'], direction=k['phase'], readings=len(k['readings']), skipped=True)
+            return self._knee_advance(now, context)
+        g, n, se = m
+        flat = [st['g'] for st in k['steps'] if st['direction'] == 'down' and st.get('flat')]
+        base = self._median(flat[-3:]) if flat else g
+        noise = self._knee_noise(flat)
+        rise = max(k['cfg']['rise_min'], k['cfg']['noise_k'] * noise) if noise is not None else k['cfg']['rise']
+        k['rise_now'] = rise
+        step = dict(offset=k['offset'], direction=k['phase'], g=round(g, 2), se=round(se, 2), base=round(base, 2),
+                    rise=round(rise, 2), noise=None if noise is None else round(noise, 2), readings=n)
         k['steps'].append(step)
-        self._event('knee_step', **step)
-        self.gcode.respond_info('DEEP CALIBRATION: knee search Z %.3f: %.1f g (recent level %.1f g, %d readings)' % (k['offset'], g, base, n))
-        if len(recent) >= 1 and g - base >= k['cfg']['max_force']:
-            knee = k['candidate']['offset'] if k['candidate'] else k['offset']
-            return self._knee_stop(now, context, 'force limit', target=round(knee + k['cfg']['margin'], 4), knee=knee)
-        if k['candidate'] is not None:
-            if g >= k['candidate']['g'] + k['cfg']['rise'] / 2.:
-                knee = k['candidate']['offset']
-                return self._knee_stop(now, context, 'knee', target=round(knee + k['cfg']['margin'], 4), knee=knee)
-            k['candidate'] = None            # not confirmed: noise, keep going
-        elif len(recent) >= 2 and g - base >= k['cfg']['rise']:
+        if k['phase'] == 'up':
+            return self._knee_up_step(now, context, step, base, rise)
+        cand = k['candidate']
+        if flat and g - base >= k['cfg']['max_force']:
+            step['candidate'] = False
+            self._event('knee_step', **step)
+            knee = cand['offset'] if cand else k['offset']
+            return self._knee_stop(now, context, 'force limit', target=round(knee + k['margin'], 4), knee=knee)
+        if cand is not None:
+            if g >= cand['g'] + rise / 2.:
+                step['confirms'] = True
+                self._event('knee_step', **step)
+                return self._knee_found_down(now, context, cand)
+            cand['flat'] = True                  # not confirmed: noise, keep going
+            k['candidate'] = None
+        if len(flat) >= 2 and g - base >= rise:
             step['candidate'] = True
             k['candidate'] = step
-        self._knee_lower(now, context)
+        else:
+            step['flat'] = True
+        self._event('knee_step', **step)
+        self.gcode.respond_info('DEEP CALIBRATION: knee search Z %.3f: %.1f g (recent level %.1f g, rise needed %.1f g, +/-%.1f g, %d readings)'
+                                % (k['offset'], g, base, rise, se, n))
+        self._knee_advance(now, context)
 
-    def _knee_lower(self, now, context):
+    def _knee_points(self, steps):
+        return [(st['offset'], st['g'], 1. / max(st.get('se') or 1., .5) ** 2) for st in steps]
+
+    def _knee_fit(self, steps, cand_offset):
+        k = self.knee; stp = k['cfg']['step']
+        # The rise can start up to two steps above the first step that passed
+        # the threshold (a gentle rise, or a threshold raised by noise)
+        lo = cand_offset - .5 * stp; hi = cand_offset + 2.5 * stp
+        fit = self._hinge_fit(self._knee_points(steps), lo, hi)
+        return fit
+
+    def _knee_found_down(self, now, context, cand):
         k = self.knee
+        down = [st for st in k['steps'] if st['direction'] == 'down']
+        fit = self._knee_fit(down, cand['offset'])
+        k['knee_threshold'] = cand['offset']
+        k['knee_down'] = fit[0] if fit else cand['offset']
+        if not k['cfg']['confirm']:
+            knee = k['knee_down']
+            return self._knee_stop(now, context, 'knee', target=round(knee + k['margin'], 4), knee=knee,
+                                   extra=dict(knee_threshold=cand['offset'], knee_down=k['knee_down'], fitted=fit is not None))
+        # Confirm from the other side: step back up until the force is flat again
+        k['phase'] = 'up'; k['up_flat'] = 0
+        self.gcode.respond_info('DEEP CALIBRATION: knee going down at Z %.4f; stepping back up to confirm it' % k['knee_down'])
+        k['offset'] = round(k['offset'] + k['cfg']['step'], 4)
+        self._knee_move(k['cfg']['step'])
+        self._knee_next_window(now)
+
+    def _knee_up_step(self, now, context, step, base, rise):
+        k = self.knee
+        flat_now = step['g'] - base < rise / 2.
+        step['flat'] = flat_now
+        self._event('knee_step', **step)
+        self.gcode.respond_info('DEEP CALIBRATION: knee check going up Z %.3f: %.1f g (%s)' % (k['offset'], step['g'], 'flat' if flat_now else 'still pressing'))
+        k['up_flat'] = k['up_flat'] + 1 if flat_now else 0
+        if k['up_flat'] < 2 and k['offset'] < k['knee_threshold'] + 4 * k['cfg']['step']:
+            k['offset'] = round(k['offset'] + k['cfg']['step'], 4)
+            self._knee_move(k['cfg']['step'])
+            self._knee_next_window(now)
+            return
+        down_flat = [st for st in k['steps'] if st['direction'] == 'down' and st.get('flat')]
+        rising_down = [st for st in k['steps'] if st['direction'] == 'down' and not st.get('flat')]
+        ups = [st for st in k['steps'] if st['direction'] == 'up']
+        # The deepest step, where the search turned, is the start of the way
+        # up: with it the upward fit has at least two pressing points
+        turn = [min(rising_down, key=lambda st: st['offset'])] if rising_down else []
+        fit_up = self._knee_fit(down_flat + turn + ups, k['knee_threshold'])
+        knee_up = fit_up[0] if fit_up else None
+        fit_all = self._knee_fit(down_flat + rising_down + ups, k['knee_threshold'])
+        knee = fit_all[0] if fit_all else k['knee_down']
+        rep = round(abs(knee_up - k['knee_down']), 4) if knee_up is not None else None
+        return self._knee_stop(now, context, 'knee', target=round(knee + k['margin'], 4), knee=knee,
+                               extra=dict(knee_threshold=k['knee_threshold'], knee_down=k['knee_down'],
+                                          knee_up=knee_up, repeatability=rep, fitted=fit_all is not None))
+
+    def _knee_advance(self, now, context):
+        k = self.knee
+        if k['phase'] == 'up':
+            k['offset'] = round(k['offset'] + k['cfg']['step'], 4)
+            self._knee_move(k['cfg']['step'])
+            self._knee_next_window(now)
+            return
         nxt = round(k['offset'] - k['cfg']['step'], 4)
         if nxt < k['floor'] - 1e-9:
             return self._knee_stop(now, context, 'no knee within %.2f mm' % k['cfg']['travel'], restore=True)
@@ -783,17 +959,40 @@ class DeepCalibration:
         self._knee_move(-k['cfg']['step'])
         self._knee_next_window(now)
 
+    def _knee_learn(self):
+        """Learn the margin above the knee from the offset kept to the end of
+        the first layer, when you babystepped after a knee search."""
+        last = self.knee_last
+        if last is None or last.get('fixed') or not last.get('user_adjusted'):
+            return
+        kept = float(self._status('gcode_move', self.reactor.monotonic()).get('homing_origin', [0, 0, 0])[2])
+        obs = kept - last['knee']
+        data = self._knee_margins()
+        old = data.get(last['key'], {'margin': last['margin'], 'n': 0})
+        rate = self.knee_cfg['learn_rate']
+        new = round(min(max(old['margin'] + rate * (obs - old['margin']), 0.), .2), 4)
+        data[last['key']] = {'margin': new, 'n': int(old['n']) + 1, 'last_observed': round(obs, 4)}
+        self._knee_save_margins(data)
+        self._event('knee_margin_learned', key=last['key'], observed=round(obs, 4), old=old['margin'], new=new, n=data[last['key']]['n'])
+        self.gcode.respond_info('DEEP CALIBRATION: knee margin for %s learned: you kept Z %.4f, %.4f above the knee; margin %.4f -> %.4f'
+                                % (last['key'].replace('_', ' ').upper(), kept, obs, old['margin'], new))
+
     cmd_KNEE_help = 'Knee search: lower the nozzle during the first layer until the load cell shows the nozzle pressing, then back off by a margin. ARM=1 waits for the first layer of an armed recording'
     def cmd_KNEE(self, gcmd):
         if self.knee is not None:
             raise gcmd.error('DEEP CALIBRATION: a knee search is already running (DEEP_CALIBRATION_KNEE_ABORT)')
         cfg = dict(self.knee_cfg)
-        for key, name in (('start', 'START'), ('step', 'STEP'), ('hold', 'HOLD'), ('rise', 'RISE'),
-                          ('margin', 'MARGIN'), ('max_force', 'MAX_FORCE'), ('travel', 'TRAVEL')):
+        for key, name in (('start', 'START'), ('step', 'STEP'), ('hold', 'HOLD'), ('hold_max', 'HOLD_MAX'), ('se', 'SE'),
+                          ('rise', 'RISE'), ('rise_min', 'RISE_MIN'), ('noise_k', 'NOISE_K'),
+                          ('max_force', 'MAX_FORCE'), ('travel', 'TRAVEL')):
             cfg[key] = gcmd.get_float(name, cfg[key], minval=0.)
-        if not (0 < cfg['step'] <= .05 and cfg['hold'] >= 2 and cfg['travel'] >= cfg['step']):
-            raise gcmd.error('DEEP CALIBRATION: STEP 0 to 0.05 mm, HOLD at least 2 s, TRAVEL at least one STEP')
-        self.knee = dict(cfg=cfg, phase='wait', own_move=False, readings=[], window=[0., 0.], ref=None)
+        cfg['confirm'] = bool(gcmd.get_int('CONFIRM', 1 if cfg['confirm'] else 0))
+        margin = gcmd.get('MARGIN', None)
+        if not (0 < cfg['step'] <= .05 and cfg['hold'] >= 2 and cfg['hold_max'] >= cfg['hold'] and cfg['travel'] >= cfg['step']):
+            raise gcmd.error('DEEP CALIBRATION: STEP 0 to 0.05 mm, HOLD at least 2 s, HOLD_MAX at least HOLD, TRAVEL at least one STEP')
+        self.knee = dict(cfg=cfg, phase='wait', own_move=False, readings=[], window=[0., 0.], ref=None,
+                         margin_fixed=None if margin is None else float(margin))
+        self.knee_last = None
         if gcmd.get_int('ARM', 0):
             if not self.auto_capture:
                 self.knee = None
@@ -813,6 +1012,30 @@ class DeepCalibration:
             gcmd.respond_info('DEEP CALIBRATION: no knee search running'); return
         now = self.reactor.monotonic()
         self._knee_stop(now, self.last_context or self._context(now), 'stopped by you', restore=True)
+
+    cmd_KNEE_MARGIN_help = 'Show the learned knee margins; MATERIAL= HEIGHT= with MARGIN=, ADJUST= or RESET=1 changes one'
+    def cmd_KNEE_MARGIN(self, gcmd):
+        data = self._knee_margins()
+        mat = gcmd.get('MATERIAL', None)
+        if mat is None:
+            if not data:
+                gcmd.respond_info('DEEP CALIBRATION: no learned knee margins yet (default %.3f)' % self.knee_cfg['margin']); return
+            lines = ['%s: %.4f (%d print%s)' % (k.replace('_', ' ').upper(), v['margin'], v['n'], '' if v['n'] == 1 else 's') for k, v in sorted(data.items())]
+            gcmd.respond_info('DEEP CALIBRATION: knee margins: ' + '; '.join(lines)); return
+        key = '%s_%.2f' % (str(mat).lower().replace('-', '_').replace(' ', '_'), gcmd.get_float('HEIGHT', .2, minval=.02, maxval=1.))
+        old = data.get(key, {'margin': self.knee_cfg['margin'], 'n': 0})
+        if gcmd.get_int('RESET', 0):
+            data.pop(key, None); self._knee_save_margins(data)
+            gcmd.respond_info('DEEP CALIBRATION: knee margin for %s reset to the default %.3f' % (key.replace('_', ' ').upper(), self.knee_cfg['margin'])); return
+        if gcmd.get('MARGIN', None) is not None:
+            new = gcmd.get_float('MARGIN', minval=0., maxval=.2)
+        elif gcmd.get('ADJUST', None) is not None:
+            new = min(max(old['margin'] + gcmd.get_float('ADJUST'), 0.), .2)
+        else:
+            gcmd.respond_info('DEEP CALIBRATION: knee margin for %s: %.4f (%d print%s)' % (key.replace('_', ' ').upper(), old['margin'], old['n'], '' if old['n'] == 1 else 's')); return
+        data[key] = {'margin': round(new, 4), 'n': int(old['n']), 'set_by_hand': True}
+        self._knee_save_margins(data)
+        gcmd.respond_info('DEEP CALIBRATION: knee margin for %s set to %.4f' % (key.replace('_', ' ').upper(), new))
 
     def cmd_ARM(self, gcmd):
         if not self.auto_capture:
@@ -920,6 +1143,12 @@ class DeepCalibration:
             self.auto_session = False
             self.stop_at = None
             self.first_layer_t = None
+            if reason == 'first_layer_done':
+                try:
+                    self._knee_learn()
+                except Exception:
+                    logging.exception('deep_calibration: knee margin learning')
+            self.knee_last = None
             if self.active:
                 self._event('session_end',reason=reason,raw_dropped=self.dropped-self.session_dropped,
                             sensor_capture=self.sensors.status())
@@ -968,7 +1197,7 @@ class DeepCalibration:
 
     def _auto_status(self):
         return dict(knee=None if self.knee is None else dict(phase=self.knee['phase'], offset=self.knee.get('offset'),
-                                                             steps=len(self.knee.get('steps', []))),
+                                                             steps=len(self.knee.get('steps', [])), rise=self.knee.get('rise_now')),
                     armed=self.armed is not None, auto_session=self.auto_session,
                     auto_capture=self.auto_capture, auto_stop_layer=self.auto_stop_layer)
 

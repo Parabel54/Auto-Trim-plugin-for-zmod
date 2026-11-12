@@ -1,3 +1,13 @@
+# 0.1.0-beta.8
+
+- Knee search, more precise:
+  - Fitted knee: a flat-then-rising line is fitted through all the steps, so the knee is found between steps (to 0.0005 mm), not only on the first step over the threshold. On the real 0.2 mm search: -0.136 instead of -0.150, the same whichever step passed the threshold.
+  - Threshold from the noise: once four flat steps exist, the rise needed is 4 times their step-to-step noise (`knee_noise_k`), measured from differences between neighbouring steps so drift does not count, and at least 6 g (`knee_rise_min_g`). On the real 0.2 mm search, a 13 g recovery from a dip is no longer a candidate.
+  - Adaptive hold: each step lasts at least 6 s (`knee_hold`), then ends when its median is within 2 g (`knee_se_g`), or at 20 s (`knee_hold_max`).
+  - Confirmation from both directions (`knee_confirm`, `CONFIRM=`): after the knee going down, the search steps back up until the force is flat again, and reports the difference between the two sides as the repeatability (a warning above two steps).
+  - Steps record whether they were a candidate or confirmed it, their precision, the noise and the rise needed.
+- Learned margin: after a search, a babystep during the same first layer teaches the margin above the knee for that filament and first-layer height (`knee_margins.json` beside the recordings; `knee_learn_rate`). `DEEP_CALIBRATION_KNEE_MARGIN` shows, sets, adjusts or resets them; `MARGIN=` on the search line is used once and not learned.
+
 # 0.1.0-beta.7
 
 - Knee search, `DEEP_CALIBRATION_KNEE` (`ARM=1` on the start G-code): during the first layer, the nozzle is lowered in 0.01 mm steps from 0.10 mm above Auto Trim's offset until the median load cell force rises steeply (12 g above the recent level, confirmed by the next step), then set 0.025 mm above that point; Auto Trim learns it. Compared step to step, so slow load cell drift does not matter; a single high step is ignored. Stops at once at 80 g above the recent level, never goes more than 0.35 mm down, and puts the offset back when no knee is found, the first layer ends first, or on `DEEP_CALIBRATION_KNEE_ABORT`. Its steps are recorded as `knee_step` and `knee_result` events, not as babystep labels. The rest of Deep Calibration still does not change the print.
