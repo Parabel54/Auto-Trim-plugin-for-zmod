@@ -23,7 +23,8 @@ Version 3.9.12 (2026-11-11). For printers running Forge-X, use Auto Trim for For
 15. [Start options](#start-options)
 16. [Advanced settings](#advanced-settings)
 17. [zMod 1.7.5](#zmod-175)
-18. [Reporting problems](#reporting-problems)
+18. [Deep Calibration](#deep-calibration)
+19. [Reporting problems](#reporting-problems)
 
 ## What Auto Trim does
 
@@ -637,6 +638,14 @@ Auto Trim works with zMod 1.7.5. What changed there, and what it means:
 - **Labelled objects** are no longer needed by zMod, and Auto Trim works without them too: the purge line is planned outside the first-layer area zMod found in the file. Labels are still better, because they include the whole part outline.
 - **3MF files** (Orca sending `.gcode.3mf`) work: zMod unpacks the G-code and runs it, start G-code included.
 - **Screen:** GuppyScreen or HelixScreen. With the native Flashforge screen, zMod hands the print to the Flashforge firmware, which Auto Trim does not support.
+
+## Deep Calibration
+
+[Deep Calibration](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod/tree/beta), on the `beta` branch of this repository, is an optional first-layer research suite for the AD5X that works alongside Auto Trim. It records what the load cell, the accelerometer and the motion system measure during the first layer, labels it from your babysteps, can find the first-layer offset automatically with the load cell (knee search, which Auto Trim then learns), and measures the bed soak more strictly than `AUTO_TRIM_SOAK_CALIBRATE` (Auto Trim's `SOAK=AUTO` uses its result).
+
+It is a development beta and not needed for Auto Trim. See its README on the `beta` branch for what it does and how to install it.
+
+The earlier Auto Trim 4.0 betas (`v4.0.0-beta.5`, `v4.0.0-beta.6`) remain available under Releases.
 
 ## Reporting problems
 
