@@ -160,11 +160,13 @@ def parse_file(path, cancel=None):
                 elif comment.startswith(('HEIGHT:', 'LAYER_HEIGHT:')):
                     try:
                         height = float(comment.split(':', 1)[1])
+                        if not finite(height): height = None
                     except ValueError:
                         height = None
                 elif comment.startswith(('WIDTH:', 'LINE_WIDTH:')):
                     try:
                         width = float(comment.split(':', 1)[1])
+                        if not finite(width): width = None
                     except ValueError:
                         width = None
                 continue
@@ -217,7 +219,7 @@ def parse_file(path, cancel=None):
                 if role not in ALLOWED_ROLES: reasons.append('unknown_or_excluded_role')
                 if not all(finite(v) and v > 0 for v in (height, width, feed)):
                     reasons.append('missing_emitted_geometry_or_feed')
-                if de is None or de <= 0 or xy is None or xy <= 0:
+                if not finite(de) or de <= 0 or not finite(xy) or xy <= 0:
                     reasons.append('travel_retraction_or_unknown_extrusion')
                 if dz is None or abs(dz) > .0001: reasons.append('z_motion_or_unknown_height')
                 segments[start] = dict(offset=start, end=offset, code=code, role=role,
@@ -234,6 +236,8 @@ def parse_file(path, cancel=None):
     required = ('nozzle_diameter', 'filament_diameter', 'filament_type', 'filament_flow_ratio')
     missing = [key for key in required if key not in settings]
     if missing: issues.append('missing_material_or_nozzle_settings')
+    if not settings.get('filament_type', '').strip('\" '):
+        issues.append('invalid_material_setting')
     for key in ('nozzle_diameter', 'filament_diameter', 'filament_flow_ratio'):
         try:
             values = [float(v) for v in settings.get(key, '').split(';')]
@@ -339,7 +343,13 @@ class GcodeContext:
 
     def request(self):
         if not self.enabled: return
-        path = self._path()
+        try:
+            path = self._path()
+        except Exception as exc:
+            self.snapshot = None
+            self.state, self.error = 'error', 'virtual-SD path unavailable: ' + str(exc)
+            self.reset_gate()
+            return
         if path == self.path and self.state in ('loading', 'ready', 'error', 'unsupported'):
             if self.state == 'ready' and self.snapshot:
                 try:
@@ -498,7 +508,7 @@ class GcodeContext:
             reasons.append('queued_conditions_differ_from_live_context')
         live['mesh'] = context.get('mesh_identity')
         if not all(finite(live[k]) for k in ('speed_factor', 'extrude_factor', 'pressure_advance',
-                                            'nozzle_target', 'bed_target')):
+                                            'smooth_time', 'nozzle_target', 'bed_target')):
             reasons.append('missing_live_conditions')
         if live['mesh'] is None: reasons.append('unverified_mesh_identity')
         for name, band in (('extruder', 3.), ('heater_bed', 1.)):
@@ -542,10 +552,11 @@ class GcodeContext:
                 feed=segment['feed'], tool=segment['tool'], live=live,
                 physics_sha256=(snapshot or {}).get('physics_sha256'))
             identity.update(material=material, filament_diameter=diameter, nozzle_diameter=nozzle)
-            expected = segment['feed'] * (live['speed_factor'] or 0.)
+            expected = (segment['feed'] * live['speed_factor']
+                        if finite(segment['feed']) and finite(live['speed_factor']) else None)
             # Acceleration/short paths may not reach requested feed. Such force
             # samples cannot teach the same steady-flow recipe.
-            if finite(velocity) and abs(velocity - expected) > max(1., abs(expected) * .05):
+            if finite(expected) and finite(velocity) and abs(velocity - expected) > max(1., abs(expected) * .05):
                 reasons.append('speed_not_at_commanded_feed')
             erate = segment['e_per_mm']
             if finite(erate) and finite(velocity) and finite(ev) and finite(live['extrude_factor']):
@@ -579,7 +590,7 @@ class GcodeContext:
         self.last_gate = dict(eligible=not reasons, reasons=sorted(set(reasons)),
             mode='queue_timed_emitted_segment', segment=segment, fingerprint=fingerprint,
             physics_sha256=(snapshot or {}).get('physics_sha256'), file_sha256=(snapshot or {}).get('file_sha256'),
-            print_time=clock, live=live, context_age=context.get('t', stamp) - stamp)
+            print_time=clock, live=live, context_age=context['t'] - stamp if finite(context.get('t')) else None)
         self.last_gate.update(material=material, filament_diameter=diameter, nozzle_diameter=nozzle)
         if self.last_gate['eligible']:
             self.last_eligible = dict(self.last_gate, t=stamp)

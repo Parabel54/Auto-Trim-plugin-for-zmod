@@ -81,7 +81,7 @@ class ParserTests(unittest.TestCase):
             with self.subTest(role=role):
                 s = next(iter(self.parse(gcode(role=role))['segments'].values()))
                 self.assertFalse(s['eligible'])
-        for text in (gcode().replace(';WIDTH:0.5', ''),
+        for text in (gcode().replace(';WIDTH:0.5', ''), gcode().replace(';HEIGHT:0.2', ';HEIGHT:nan'),
                      gcode().replace('G1 X100', 'G2 X100'),
                      gcode().replace('G1 X100', 'G1 Z0.25 X100'),
                      gcode(e='-1'), gcode().replace('M83', 'G20\nM83')):
@@ -90,7 +90,7 @@ class ParserTests(unittest.TestCase):
 
     def test_nozzle_material_errors_and_multimaterial_mapping_fail_closed(self):
         for settings in ({'nozzle_diameter': 'nan'}, {'filament_flow_ratio': '-1'},
-                         {'filament_type': 'PLA;PETG'}, {'filament_diameter': ''}):
+                         {'filament_type': 'PLA;PETG'}, {'filament_diameter': ''}, {'filament_type': ''}):
             self.assertFalse(self.parse(gcode(settings=settings))['eligible'])
 
     def test_conflicting_settings_and_oversized_line_rejected(self):
@@ -215,6 +215,20 @@ class GateTests(unittest.TestCase):
         native = mock.Mock(return_value=77)
         self.assertEqual(self.source.observe('G1', native, ArmCommand()), 77)
         native.assert_called_once()
+
+    def test_missing_emitted_feed_and_geometry_remain_recordable(self):
+        self.source.snapshot = parse_file(str(self.path))
+        self.segment['feed'] = None; self.segment['height'] = None; self.segment['width'] = None
+        self.segment['eligible'] = False; self.segment['reasons'] = ['missing_emitted_geometry_or_feed']
+        result = self.sample(0.)
+        self.assertFalse(result['eligible'])
+        self.assertIn('missing_emitted_geometry_or_feed', result['reasons'])
+
+    def test_native_source_path_failure_does_not_fail_recording(self):
+        self.f.objects['virtual_sdcard'] = SimpleNamespace(file_path=mock.Mock(side_effect=OSError('unavailable')))
+        self.source.request()
+        self.assertEqual(self.source.state, 'error')
+        self.assertIsNone(self.source.snapshot)
 
     def test_identical_reuploaded_file_keeps_new_stat_identity(self):
         sd = SimpleNamespace(file_path=lambda: str(self.path))

@@ -1,7 +1,7 @@
 .................................................................................................................................. [ 43%]
-............................................................. [ 64%]
-............................................................ [ 84%]
-..............................................                           [100%]
+............................................................. [ 63%]
+............................................................ [ 83%]
+................................................                         [100%]
 =============================== warnings summary ===============================
 ../../../../opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/site-packages/anyio/pytest_plugin.py:14
   /opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/site-packages/anyio/pytest_plugin.py:14: PytestRemovedIn10Warning: _pytest.python.CallSpec2 has been renamed to CallSpec.
@@ -11,4 +11,4 @@
     from _pytest.python import CallSpec2
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-297 passed, 1 warning, 37 subtests passed in 16.11s
+299 passed, 1 warning, 37 subtests passed in 16.42s
