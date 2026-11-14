@@ -22,7 +22,7 @@ except ImportError:
     from deep_calibration_mesh import DeepCalibrationMesh
     from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.2'
+VERSION = '0.1.0-beta.10.2.1'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -268,13 +268,13 @@ class DeepCalibration:
         return result
 
     def _queue_lead(self, now):
-        # Seconds of moves queued ahead of the nozzle (0 to 5)
+        # Seconds of moves queued ahead of the nozzle; long moves must not be truncated.
         th = self._status('toolhead', now)
         try:
             lead = float(th.get('print_time')) - float(th.get('estimated_print_time'))
         except (TypeError, ValueError):
             return 0.
-        return min(max(lead, 0.), 5.) if finite(lead) else 0.
+        return max(lead, 0.) if finite(lead) else 0.
 
     def _label_adjustment(self, before, after):
         now = self.reactor.monotonic()
@@ -891,11 +891,11 @@ class DeepCalibration:
         elif restore and k.get('original') is not None:
             self._knee_move(k['original'] - current)
         k['phase'] = 'done'
-        result = dict(reason=reason, knee=knee, target=target, original=k.get('original'), steps=k.get('steps', []),
+        result = dict(reason=reason, accepted=target is not None and reason == 'knee', knee=knee, target=target, original=k.get('original'), steps=k.get('steps', []),
                       key=k.get('key'), margin=k.get('margin'), margin_source=k.get('margin_src'))
         result.update(extra or {})
         self._event('knee_result', **result)
-        if target is not None:
+        if target is not None and reason == 'knee':
             self.knee_last = dict(knee=knee, target=target, margin=k['margin'], key=k['key'],
                                   fixed=k.get('margin_fixed') is not None, user_adjusted=False,
                                   feature_fingerprint=k.get('feature_fingerprint'),
@@ -908,6 +908,7 @@ class DeepCalibration:
             if rep is not None and rep > 2 * k['cfg']['step']:
                 self.gcode.respond_info('DEEP CALIBRATION: !! the knee going down and going up differ by %.4f mm: this result is less certain. Check the first layer.' % rep)
         else:
+            self.knee_last = None
             self.gcode.respond_info('DEEP CALIBRATION: knee search stopped (%s)%s' % (
                 reason, ', offset back to Z %.3f' % k['original'] if restore and k.get('original') is not None else ''))
         self.knee = None

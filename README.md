@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.2 (2026-11-14). **Current official development continuation of beta 9.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
+Version 0.1.0-beta.10.2.1 (2026-11-14). **Current official development continuation of beta 9.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
 
 ## Contents
 
@@ -189,9 +189,19 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
 
+## Beta 10.2.1: reviewed corrections
+
+Use **0.1.0-beta.10.2.1** in preference to 10.2. The start G-code remains unchanged. Replace the complete folder, rerun its installer and restart while idle.
+
+The independent review found and fixed native modal/coordinate attribution, G91/M82 and relative-E-after-tool-selection parsing, truncated long queue timing, and force-limit relief being classed as a learnable result. It also fixed valid Orca duplicate wipe-tower coordinates and comma-separated numeric arrays, retained queued attribution after file EOF, and made missing eligibility flags explicit rather than assuming disabled. Filament profile identity now stays in the physics fingerprint. Legacy margin entries remain on disk; changed identities need a matching seed or explicit one-off margin.
+
+Native handlers still run once and retain their errors/return values. Attribution verifies native pre/post coordinates, extrusion mode/delta and inherited feed against the indexed command. Force-limit relief remains a stop/retreat, with `accepted: false`; it is not a fitted knee or a margin-learning reference. Full queue lead is used for offset/label settling rather than a five-second cap.
+
+See [the review report](BETA10_2_REVIEW.md). **314 tests and 37 subtests pass**, including regressions against the supplied unmodified Klipper movement class. Software tests do not establish physical printer validation.
+
 ## Beta 10.2: slicer context without longer start G-code
 
-Keep your existing `DEEP_CALIBRATION_ARM MATERIAL=... HEIGHT=... WIDTH=... SPEED=... FILAMENT=...` line, Auto Trim preparation and layer hooks. No new slicer placeholders or per-setting G-code commands are required. Replace the complete package folder, rerun the installer, and restart while idle; it now links a fifth module. Check `DEEP_CALIBRATION_STATUS` for **0.1.0-beta.10.2**.
+Keep your existing `DEEP_CALIBRATION_ARM MATERIAL=... HEIGHT=... WIDTH=... SPEED=... FILAMENT=...` line, Auto Trim preparation and layer hooks. No new slicer placeholders or per-setting G-code commands are required. Replace the complete package folder, rerun the installer, and restart while idle; it now links a fifth module. Check `DEEP_CALIBRATION_STATUS` for **0.1.0-beta.10.2.1**.
 
 ### Automatic file capture
 

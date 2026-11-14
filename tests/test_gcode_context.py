@@ -15,7 +15,9 @@ from deep_calibration_gcode import parse_file, GcodeContext, digest
 SETTINGS = {'nozzle_diameter': '0.4', 'filament_diameter': '1.75',
             'filament_type': 'PLA', 'filament_flow_ratio': '1',
             'initial_layer_speed': '40', 'initial_layer_infill_speed': '40',
-            'nozzle_temperature_initial_layer': '230', 'raft_layers': '0'}
+            'nozzle_temperature_initial_layer': '230', 'raft_layers': '0',
+            'enable_mixed_color_sublayer':'0','spiral_mode':'0','flush_into_infill':'0',
+            'flush_into_objects':'0','seam_slope_type':'none'}
 
 
 def gcode(role='Internal solid infill', extra='', settings=None, e='2.5', header=''):
@@ -197,7 +199,13 @@ class GateTests(unittest.TestCase):
         self.f.objects['virtual_sdcard'] = SimpleNamespace(cmd_from_sd=True, file_position=self.segment['offset'])
         clock = [10.]
         self.f.objects['toolhead'].register_lookahead_callback = lambda cb: cb(clock[0])
-        def native(cmd): clock[0] += 5.; return 'native-return'
+        gm = self.f.objects['gcode_move'].status
+        gm.update(gcode_position=[self.segment['before'][a] for a in 'XYZE'],
+                  absolute_coordinates=True, absolute_extrude=False, speed=2400.)
+        def native(cmd):
+            clock[0] += 5.
+            gm['gcode_position'] = [self.segment['after'][a] for a in 'XYZE']
+            return 'native-return'
         self.source.timeline.clear()
         result = self.source.observe('G1', native, ArmCommand(X='100', E='2.5', F='2400'))
         self.assertEqual(result, 'native-return')

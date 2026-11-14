@@ -36,7 +36,10 @@ def export(gcode_path, project_path, output=None):
                 scope='archived project settings; inheritance and modifier effectiveness not inferred')
     path = Path(output) if output else Path(str(gcode_path) + '.dc.json')
     # Exclusive creation protects an existing snapshot from accidental overwrite.
-    with path.open('x') as stream: json.dump(data, stream, indent=2, allow_nan=False)
+    payload = json.dumps(data, indent=2, allow_nan=False)
+    if len(payload.encode('utf-8')) > 8 * 1024 * 1024:
+        raise ValueError('encoded project snapshot exceeds printer 8 MiB bound')
+    with path.open('x') as stream: stream.write(payload)
     return path
 
 

@@ -1,0 +1,94 @@
+FFFF.FF                                                                  [100%]
+=================================== FAILURES ===================================
+_ AuditRegressions.test_closed_sd_handle_does_not_drop_still_executing_queued_segments _
+
+self = <test_beta102_review.AuditRegressions testMethod=test_closed_sd_handle_does_not_drop_still_executing_queued_segments>
+
+    def test_closed_sd_handle_does_not_drop_still_executing_queued_segments(self):
+        self.c.active = True
+        self.f.objects['virtual_sdcard'] = SimpleNamespace(file_path=lambda:None)
+        self.s.timeline.append(dict(start=0.,end=20.))
+        self.s.request()
+>       self.assertEqual(self.s.state, 'ready')
+E       AssertionError: 'unavailable' != 'ready'
+E       - unavailable
+E       + ready
+
+tests/test_beta102_review.py:83: AssertionError
+__ AuditRegressions.test_force_limit_relief_is_not_a_learnable_fitted_result ___
+
+self = <test_beta102_review.AuditRegressions testMethod=test_force_limit_relief_is_not_a_learnable_fitted_result>
+
+    def test_force_limit_relief_is_not_a_learnable_fitted_result(self):
+        self.c.knee = dict(original=0.,offset=-.1,steps=[],key='test',margin=.01,
+                           margin_src='test',margin_fixed=None,cfg={'step':.01})
+        self.c._knee_move = lambda value: None
+        self.c._knee_stop(0.,{'gcode':{}},'force limit',target=-.09,knee=-.1)
+>       self.assertIsNone(self.c.knee_last)
+E       AssertionError: {'knee': -0.1, 'target': -0.09, 'margin': 0.01, 'key': 'test', 'fixed': False, 'user_adjusted': False, 'feature_fingerprint': None, 'physics_sha256': None, 'live_conditions': None} is not None
+
+tests/test_beta102_review.py:76: AssertionError
+_ AuditRegressions.test_hidden_macro_coordinate_change_cannot_pass_attribution _
+
+self = <test_beta102_review.AuditRegressions testMethod=test_hidden_macro_coordinate_change_cannot_pass_attribution>
+
+    def test_hidden_macro_coordinate_change_cannot_pass_attribution(self):
+        self.native.last_position[0] = 20.
+        self.observe()
+>       self.assertFalse(self.s.timeline[-1]['source_valid'])
+E       AssertionError: True is not false
+
+tests/test_beta102_review.py:61: AssertionError
+___ AuditRegressions.test_long_queued_move_is_not_truncated_to_five_seconds ____
+
+self = <test_beta102_review.AuditRegressions testMethod=test_long_queued_move_is_not_truncated_to_five_seconds>
+
+    def test_long_queued_move_is_not_truncated_to_five_seconds(self):
+        self.f.objects['toolhead'].status.update(print_time=30.,estimated_print_time=10.)
+>       self.assertEqual(self.c._queue_lead(10.), 20.)
+E       AssertionError: 5.0 != 20.0
+
+tests/test_beta102_review.py:69: AssertionError
+_ AuditRegressions.test_modal_mismatch_is_excluded_without_changing_native_behavior _
+
+self = <test_beta102_review.AuditRegressions testMethod=test_modal_mismatch_is_excluded_without_changing_native_behavior>
+
+    def test_modal_mismatch_is_excluded_without_changing_native_behavior(self):
+        self.native.absolute_coord = False
+        self.observe()
+        self.assertEqual(self.native.last_position, [100.,0.,.2,2.5])
+>       self.assertFalse(self.s.timeline[-1]['source_valid'])
+E       AssertionError: True is not false
+
+tests/test_beta102_review.py:56: AssertionError
+_ AuditRegressions.test_relative_xyz_also_makes_e_relative_with_m82_in_native_klipper _
+
+self = <test_beta102_review.AuditRegressions testMethod=test_relative_xyz_also_makes_e_relative_with_m82_in_native_klipper>
+
+    def test_relative_xyz_also_makes_e_relative_with_m82_in_native_klipper(self):
+        text = gcode(extra='G92 E50\nM82\nG91\n')
+        self.path.write_text(text); p = parse_file(str(self.path)); segment = next(iter(p['segments'].values()))
+        self.native.last_position = [0.,0.,.2,50.]
+        self.native.cmd_M82(ArmCommand()); self.native.cmd_G91(ArmCommand())
+        self.native.cmd_G1(ArmCommand(X='100',E='2.5',F='2400'))
+>       self.assertAlmostEqual(segment['delta_e'], self.native.last_position[3]-50.)
+E       AssertionError: -47.5 != 2.5 within 7 places (50.0 difference)
+
+tests/test_beta102_review.py:50: AssertionError
+=============================== warnings summary ===============================
+../../../../opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/site-packages/anyio/pytest_plugin.py:14
+  /opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/site-packages/anyio/pytest_plugin.py:14: PytestRemovedIn10Warning: _pytest.python.CallSpec2 has been renamed to CallSpec.
+  The CallSpec2 alias will be removed in pytest 10.
+  Update imports to use CallSpec instead.
+  See https://docs.pytest.org/en/stable/deprecations.html#callspec2-renamed
+    from _pytest.python import CallSpec2
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_beta102_review.py::AuditRegressions::test_closed_sd_handle_does_not_drop_still_executing_queued_segments
+FAILED tests/test_beta102_review.py::AuditRegressions::test_force_limit_relief_is_not_a_learnable_fitted_result
+FAILED tests/test_beta102_review.py::AuditRegressions::test_hidden_macro_coordinate_change_cannot_pass_attribution
+FAILED tests/test_beta102_review.py::AuditRegressions::test_long_queued_move_is_not_truncated_to_five_seconds
+FAILED tests/test_beta102_review.py::AuditRegressions::test_modal_mismatch_is_excluded_without_changing_native_behavior
+FAILED tests/test_beta102_review.py::AuditRegressions::test_relative_xyz_also_makes_e_relative_with_m82_in_native_klipper
+6 failed, 1 passed, 1 warning in 0.23s

@@ -1,3 +1,13 @@
+# 0.1.0-beta.10.2.1 — independent review fixes (2026-11-14)
+
+- Verify native pre/post coordinate and extrusion modes, positions/delta and feed before attributing an indexed move; preserve original behavior/errors.
+- Match native G91/M82 extrusion semantics and handle relative E with an unknown absolute origin after T commands.
+- Retain full long-move queue lead; do not truncate to five seconds.
+- Mark force-limit relief unaccepted and unavailable for knee-margin learning.
+- Support pinned Orca's duplicate plate-coordinate emission and comma-separated numeric vectors while retaining exact raw metadata.
+- Preserve still-queued segment attribution after virtual-SD EOF. Treat missing gating flags as unknown. Keep filament profile identity in physics keys.
+- Bound growing scans and encoded sidecar output. 314 tests + 37 subtests pass, including supplied native Klipper methods. Physical validation pending.
+
 # 0.1.0-beta.10.2 — automatic slicer context (2026-11-14)
 
 - Preserve the existing Orca ARM line/layer hooks. Read active UTF-8 virtual-SD G-code and its complete exported config in a background worker; retain unknown values and report coverage of all 378 audited process keys.
