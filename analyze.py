@@ -13,7 +13,7 @@ FIELDS = ['run','segment','t','print_time','label','label_source','label_inferre
           'live_speed','live_e_speed','volumetric_flow','fan','nozzle_temp','bed_temp','offset_z',
           'probe_offset','raw','filtered_raw','delta_counts','filtered_grams','baseline_valid',
           'rate_hz','nyquist_hz','shaper_resolvable','live_x','live_y','live_z','mesh_live',
-          'planned_mesh_error','mesh_comparable','context_lag','motion_method','native_generation','cpg','board_overload','accel_rms','accel_shaper_power','eligible','rejection']
+          'planned_mesh_error','mesh_comparable','context_lag','motion_method','native_generation','cpg','board_overload','accel_rms','accel_shaper_power','eligible','rejection','extrusion_role','tool','source_fingerprint','source_file_sha256']
 FEATURES = ['force_relative_good','live_speed','height','width','fan','layer',
             'volumetric_flow','nozzle_temp','bed_temp','force_x_flow']
 
@@ -92,7 +92,21 @@ def load_run(path, settle=5.):
                 row['print_time'] = motion.get('print_time')
                 if item.get('mesh_interpolation_at_receipt') is not None:
                     row['mesh_live'] = item['mesh_interpolation_at_receipt']
+                source = item.get('slicer_context') or {}
+                emitted = source.get('segment') or {}
+                if emitted:
+                    row['height'],row['width'] = emitted.get('height'),emitted.get('width')
+                    row['recipe_speed'] = emitted.get('feed')
+                if source.get('material'): row['material'] = source['material']
+                if finite(source.get('filament_diameter')) and finite(e):
+                    row['volumetric_flow'] = e*math.pi*(source['filament_diameter']/2)**2
+                row.update(extrusion_role=emitted.get('role'), tool=emitted.get('tool'),
+                           source_fingerprint=source.get('fingerprint'),
+                           source_file_sha256=source.get('file_sha256'))
                 reasons = []
+                if (metadata or {}).get('slicer_context',{}).get('enabled'):
+                    if not source.get('eligible'):
+                        reasons.extend('slicer:'+reason for reason in (source.get('reasons') or ['missing_segment_context']))
                 if row['board_overload']:reasons.append('board_overload_or_invalid_force')
                 if row['label'] not in ('GOOD','TOO_HIGH','TOO_LOW'): reasons.append('unlabelled_or_transition')
                 if ctx.get('print_stats',{}).get('state')!='printing': reasons.append('not_printing')
@@ -142,15 +156,17 @@ def load_run(path, settle=5.):
 def summarize(run):
     groups = collections.defaultdict(list)
     for row in run['samples']:
-        if row['eligible']: groups[row['segment']].append(row)
+        if row['eligible']: groups[(row['segment'], row.get('source_fingerprint'))].append(row)
     segments = []
-    for segment, rows in groups.items():
+    for (segment, source_fingerprint), rows in groups.items():
         if len(rows)<8 or rows[-1]['t']-rows[0]['t']<10: continue
         entry = {key:median([row.get(key) for row in rows]) for key in FIELDS
-                 if key not in ('run','material','label','rejection','motion_method')}
+                 if key not in ('run','material','label','rejection','motion_method','extrusion_role','source_fingerprint','source_file_sha256')}
         entry.update(run=rows[0]['run'],material=rows[0]['material'],label=rows[0]['label'],n=len(rows),
                      printer_id=run['metadata'].get('printer_id'),
                      span=rows[-1]['t']-rows[0]['t'],segment=segment,
+                     source_fingerprint=source_fingerprint,extrusion_role=rows[0].get('extrusion_role'),
+                     source_file_sha256=rows[0].get('source_file_sha256'),
                      force_raw_sd=statistics.pstdev(row['raw'] for row in rows),
                      force_filtered_sd=statistics.pstdev(row['filtered_raw'] for row in rows))
         # A moving offset within a segment is not a valid fixed-condition label.
@@ -166,7 +182,7 @@ def condition(s):
     # Pair only within a run and an unchanged declared recipe/layer/fan/temp.
     return (s['run'],s['material'],s['height'],s['width'],s['recipe_speed'],
             s['recipe_fan'],s['layer'],round(s['fan'],2),round(s['nozzle_temp']/5),round(s['bed_temp']/5),
-            s['native_generation'],s['cpg'],s['probe_offset'])
+            s['native_generation'],s['cpg'],s['probe_offset'],s.get('source_fingerprint'),s.get('extrusion_role'))
 
 
 def paired(segments):
@@ -205,14 +221,14 @@ def fit(pairs, extra_features=()):
     """Experimental regression; final run held out as a whole, never random rows."""
     feature_names=FEATURES+list(extra_features)
     models = {}
-    identities = sorted(set((p.get('printer_id') or 'unknown',p['material']) for p in pairs))
-    for printer_id, material in identities:
-        subset=[p for p in pairs if p['material']==material and (p.get('printer_id') or 'unknown')==printer_id]
+    identities = sorted(set((p.get('printer_id') or 'unknown',p['material'],p.get('source_fingerprint') or '') for p in pairs))
+    for printer_id, material, source_fingerprint in identities:
+        subset=[p for p in pairs if p['material']==material and (p.get('printer_id') or 'unknown')==printer_id and (p.get('source_fingerprint') or '')==source_fingerprint]
         runs=sorted(set(p['run'] for p in subset))
         result=dict(status='insufficient_data',required='>=4 runs, >=24 training segments, >=6 held-out segments',
                     automatic_application=False,
                     limitation='retrospective model requires a GOOD force reference for each matched recipe; not a standalone gap sensor')
-        models[printer_id+':'+material]=result
+        models[printer_id+':'+material+(':ctx'+source_fingerprint if source_fingerprint else '')]=result
         if printer_id=='unknown':
             result['status']='missing_printer_identity';continue
         if len(runs)<4: continue

@@ -1,3 +1,13 @@
+# 0.1.0-beta.10.2 — automatic slicer context (2026-11-14)
+
+- Preserve the existing Orca ARM line/layer hooks. Read active UTF-8 virtual-SD G-code and its complete exported config in a background worker; retain unknown values and report coverage of all 378 audited process keys.
+- Add native lookahead timing for read-only command attribution, emitted role/geometry/flow context, live condition fingerprints and fit eligibility reasons. Source failure blocks automatic fitting while passive recording continues.
+- Count only accepted sample time toward knee holds. Reject unsuitable roles and unsettled conditions; do not step down on missing data. Keep descending selection and ascending diagnostics.
+- Scope margins, offline GOOD pairing and models by the settings/feature fingerprint; preserve legacy entries without automatic reuse.
+- Add an optional offline 3MF settings exporter and exact-G-code-bound sidecar. Preserve scoped settings without claiming inheritance resolution.
+- Link the fifth runtime module, correct the installer's stale bundled-Auto-Trim message, and retain 1 mm/s guarded contacts and existing capture/soak behavior.
+- See tests/BETA10_2_VALIDATION.txt. Software verification only; physical validation pending.
+
 # 0.1.0-beta.10.1 — current continuation (2026-11-14)
 
 Official continuation of the existing Deep Calibration beta, superseding beta 9. Beta 10 was an intermediate local checkpoint; beta 10.1 is the current working baseline. Published as the continuation on the GitHub `beta` branch.

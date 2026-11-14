@@ -16,11 +16,13 @@ import uuid
 try:
     from .deep_calibration_sensors import SensorExtension
     from .deep_calibration_mesh import DeepCalibrationMesh
+    from .deep_calibration_gcode import GcodeContext, digest
 except ImportError:
     from deep_calibration_sensors import SensorExtension
     from deep_calibration_mesh import DeepCalibrationMesh
+    from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.1'
+VERSION = '0.1.0-beta.10.2'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -225,8 +227,10 @@ class DeepCalibration:
         self.last_sample = None
         self.sensors = SensorExtension(self, config)
         self.mesh = DeepCalibrationMesh(config)
+        self.slicer = GcodeContext(self, config)
         self.printer.register_event_handler('klippy:connect', self._connect)
         self.printer.register_event_handler('klippy:ready', self._install_adjustment_observer)
+        self.printer.register_event_handler('klippy:ready', self.slicer.install)
         self.printer.register_event_handler('klippy:shutdown', self._shutdown)
         self.printer.register_event_handler('klippy:disconnect', self._disconnect)
         self.timer = self.reactor.register_timer(self._tick)
@@ -369,6 +373,7 @@ class DeepCalibration:
             self.poll_saved = None
 
     def _shutdown(self):
+        self.slicer.stop()
         try:
             if self.active:
                 self._end('printer_shutdown')
@@ -428,6 +433,14 @@ class DeepCalibration:
                 values[shaper.get_name()] = safe(params.get_status())
         return values
 
+    def _context_conditions(self):
+        # Native get_status calls only: no queue flush, file reads or motion.
+        now = self.reactor.monotonic()
+        return dict(gcode=self._status('gcode_move', now),
+                    extruder_state=self._status('extruder', now),
+                    heaters={name:self._status(name, now) for name in ('extruder','heater_bed')},
+                    fans={name:self._status(name, now) for name, obj in self.fans})
+
     def _context(self, now):
         gm = self._status('gcode_move', now)
         th = self.printer.lookup_object('toolhead')
@@ -448,6 +461,8 @@ class DeepCalibration:
                     cell_age=now-self.last_sample['t'] if self.last_sample else None,
                     auto_trim_cell=self._status('auto_trim_cell', now),
                     probe_status=self._status('probe', now),
+                    extruder_state=self._status('extruder', now),
+                    slicer_context=self.slicer.status(), mesh_identity=None,
                     clock_note='host monotonic receipt/context times; requested motion is software, not an encoder')
         reported = data['probe_status'].get('last_z_result')
         configured = data['configured_probe_offset']
@@ -458,6 +473,11 @@ class DeepCalibration:
         bm = self.printer.lookup_object('bed_mesh', None)
         mesh = bm.get_mesh() if bm is not None else None
         if mesh is not None:
+            mesh_status = bm.get_status(now)
+            if mesh_status.get('mesh_matrix') and mesh_status.get('probed_matrix'):
+                data['mesh_identity'] = digest({key:mesh_status.get(key) for key in
+                    ('profile_name','mesh_matrix','probed_matrix','mesh_min','mesh_max',
+                     'fade_start','fade_end','fade_target')})
             pos = list(bm.last_position)
             factor = bm.get_z_factor(pos[2])
             expected = factor*(mesh.calc_z(pos[0],pos[1])-bm.fade_target)+bm.fade_target
@@ -504,6 +524,7 @@ class DeepCalibration:
 
     def _tick(self, now):
         try:
+            self.slicer.poll()
             with self.lock:
                 pending = list(self.pending)
                 self.pending.clear()
@@ -572,12 +593,27 @@ class DeepCalibration:
             self.history.append((stamp, raw, generation,
                                  0<=now-stamp<=.35 and finite(velocity) and abs(velocity)<.05
                                  and finite(ev) and abs(ev)<.01 and abs(grams)<=5120))
+            motion_at_receipt = self._motion_at(stamp)
+            gate = self.slicer.sample(stamp, motion_at_receipt, context)
             k = self.knee
-            if k is not None and k['phase'] in ('down', 'up') and stamp >= k['window'][0]:
-                mot = self._motion_at(stamp)
-                kev = mot.get('live_extruder_velocity'); kv = mot.get('live_velocity')
-                if finite(kev) and finite(kv) and kev > .2 and kv > 10 and abs(grams) <= 5120:
-                    k['readings'].append(raw)
+            if k is not None and k['phase'] in ('down', 'up'):
+                if self.slicer.enabled:
+                    valid = gate['eligible'] and gate.get('fingerprint') == k.get('feature_fingerprint')
+                    if not valid:
+                        k['last_eligible_sample'] = None
+                        k.setdefault('gate_blocked_since', stamp)
+                        k['gate_reasons'] = gate['reasons'] or ['different_extrusion_recipe']
+                    else:
+                        k.pop('gate_blocked_since', None)
+                if stamp >= k['window'][0]:
+                    kev = motion_at_receipt.get('live_extruder_velocity'); kv = motion_at_receipt.get('live_velocity')
+                    valid = not self.slicer.enabled or (gate['eligible'] and gate.get('fingerprint') == k.get('feature_fingerprint'))
+                    if valid and finite(kev) and finite(kv) and kev > .2 and kv > 10 and abs(grams) <= 5120:
+                        k['readings'].append(raw)
+                        previous = k.get('last_eligible_sample')
+                        if self.slicer.enabled and previous is not None and 0 < stamp - previous <= .35:
+                            k['eligible_duration'] += stamp - previous
+                        k['last_eligible_sample'] = stamp
             self.last_sample = dict(t=stamp, raw=raw, board_grams=grams, sequence=sequence,
                                     native_command_generation=generation, board_overload=abs(grams)>5120, **filtered)
             if self.active and stamp >= self.started:
@@ -599,7 +635,7 @@ class DeepCalibration:
                                  filtered_delta_counts=delta,
                                  filtered_grams=delta/self.cpg if delta is not None and self.cpg else None,
                                  counts_per_gram=self.cpg or None,
-                                 motion_at_receipt=motion_at_receipt,
+                                 motion_at_receipt=motion_at_receipt, slicer_context=gate,
                                  mesh_interpolation_at_receipt=interpolation,
                                  shaper_resolvable=bool(shaper_frequencies and filtered['nyquist_hz']
                                      and max(shaper_frequencies)<.4*(filtered['rate_hz'] or 0)),
@@ -732,6 +768,8 @@ class DeepCalibration:
         begin = now + self._queue_lead(now) + (k['cfg']['up_settle'] if k['phase'] == 'up' else 1.5)
         k['window'] = [begin, begin + max(k['cfg']['hold_max'], k['cfg']['up_hold'] if k['phase'] == 'up' else 0.)]
         k['readings'] = []
+        k['eligible_duration'] = 0.
+        k['last_eligible_sample'] = None
 
     @staticmethod
     def _median(vals):
@@ -807,13 +845,22 @@ class DeepCalibration:
     # ------------------------------------------------------------------
     def _knee_begin(self, now, context):
         k = self.knee
+        if self.slicer.enabled:
+            gate = self.slicer.last_gate or {}
+            if not gate.get('eligible') or not gate.get('fingerprint'):
+                self.knee = None
+                raise ValueError('Slicer context not ready for a steady first-layer model segment; recording continues')
+            k['feature_fingerprint'] = gate['fingerprint']
+            k['physics_sha256'] = gate['physics_sha256']
+            k['live_conditions'] = gate['live']
         k['original'] = self._knee_offset(context)
         k['offset'] = round(k['original'] + k['cfg']['start'], 4)
         k['floor'] = round(k['offset'] - k['cfg']['travel'], 4)
         k['phase'] = 'down'
         k['steps'] = []
         k['candidate'] = None
-        k['key'] = self._knee_key()
+        k['recipe_key'] = self._knee_key()
+        k['key'] = k['recipe_key'] + ('_ctx' + k['feature_fingerprint'] if self.slicer.enabled else '')
         k['motion_factors'] = [context['gcode'].get('speed_factor'), context['gcode'].get('extrude_factor')]
         if k.get('margin_fixed') is None:
             m = self._knee_margins().get(k['key'])
@@ -850,7 +897,9 @@ class DeepCalibration:
         self._event('knee_result', **result)
         if target is not None:
             self.knee_last = dict(knee=knee, target=target, margin=k['margin'], key=k['key'],
-                                  fixed=k.get('margin_fixed') is not None, user_adjusted=False)
+                                  fixed=k.get('margin_fixed') is not None, user_adjusted=False,
+                                  feature_fingerprint=k.get('feature_fingerprint'),
+                                  physics_sha256=k.get('physics_sha256'), live_conditions=k.get('live_conditions'))
             rep = (extra or {}).get('repeatability')
             self.gcode.respond_info('DEEP CALIBRATION: knee found at Z %.4f%s: the nozzle starts pressing the line there. '
                                     'Offset set to Z %.4f (knee + %.3f, %s); Auto Trim learns it when layer 3 starts.'
@@ -877,6 +926,8 @@ class DeepCalibration:
         elif self.poll_saved is not None and elapsed > 0 and n / elapsed >= 8.:
             hold = min(hold, k['cfg']['fast_hold'])
         hold_max = max(k['cfg']['hold_max'], hold)
+        if self.slicer.enabled and k.get('eligible_duration', 0.) < hold:
+            return 'skip' if now >= w0 + hold_max else 'wait'
         if now < w0 + hold:
             return 'wait'
         cpg = self.cpg or 43.
@@ -895,6 +946,12 @@ class DeepCalibration:
         k = self.knee
         state, layer, z = self._first_layer_state(context)
         if k['phase'] == 'wait':
+            if layer is not None and layer >= 2:
+                return self._knee_stop(now, context, 'first layer ended before eligible slicer context')
+            if self.slicer.enabled and not (self.slicer.last_gate or {}).get('eligible'):
+                if state in ('complete', 'cancelled', 'error'):
+                    return self._knee_stop(now, context, 'print ended before eligible slicer context')
+                return
             if self.active and self.auto_session and self.first_layer_t is not None and now >= self.first_layer_t + 3.:
                 self._knee_begin(now, context)
             elif state in ('complete', 'cancelled', 'error'):
@@ -909,12 +966,26 @@ class DeepCalibration:
         if layer is not None and layer >= 2:
             return self._knee_stop(now, context, 'the first layer ended before a knee was found', restore=True)
         factors = [context['gcode'].get('speed_factor'), context['gcode'].get('extrude_factor')]
-        if self._knee_key() != k['key'] or factors != k['motion_factors']:
+        if self._knee_key() != k.get('recipe_key', k['key']) or factors != k['motion_factors']:
             return self._knee_stop(now, context, 'recipe or speed/extrusion override changed', restore=True)
+        if self.slicer.enabled:
+            gate = self.slicer.last_gate or {}
+            live = gate.get('live')
+            if live and live != k.get('live_conditions'):
+                return self._knee_stop(now, context, 'live thermal/fan/PA/mesh conditions changed', restore=True)
+            if gate.get('eligible') and gate.get('fingerprint') != k.get('feature_fingerprint'):
+                return self._knee_stop(now, context, 'extrusion role/geometry/flow changed', restore=True)
+            blocked = k.get('gate_blocked_since')
+            if blocked is not None:
+                if now - blocked > max(30., k['cfg']['hold_max']):
+                    return self._knee_stop(now, context, 'no continuous eligible extrusion: ' + ','.join(k.get('gate_reasons', [])), restore=True)
+                return
         m = self._knee_measure(now)
         if m == 'wait':
             return
         if m == 'skip':
+            if self.slicer.enabled:
+                return self._knee_stop(now, context, 'insufficient steady extrusion in measurement window', restore=True)
             self._event('knee_step', offset=k['offset'], direction=k['phase'], readings=len(k['readings']), skipped=True)
             return self._knee_advance(now, context)
         g, n, se = m
@@ -1032,11 +1103,22 @@ class DeepCalibration:
         if not finite(obs) or not 0 <= obs <= .3:
             self._event('knee_margin_rejected', observed=obs)
             return
+        if self.slicer.enabled:
+            gate = self.slicer.last_gate or {}
+            eligible = self.slicer.last_eligible or {}
+            if (gate.get('physics_sha256') != last.get('physics_sha256')
+                    or gate.get('live') != last.get('live_conditions')
+                    or eligible.get('fingerprint') != last.get('feature_fingerprint')
+                    or self.reactor.monotonic() - eligible.get('t', -1000.) > 10.):
+                self._event('knee_margin_rejected', reason='slicer settings identity changed')
+                return
         data = self._knee_margins()
         old = data.get(last['key'], {'margin': last['margin'], 'n': 0})
         rate = self.knee_cfg['learn_rate']
         new = round(min(max(old['margin'] + rate * (obs - old['margin']), 0.), .3), 4)
-        data[last['key']] = {'margin': new, 'n': int(old['n']) + 1, 'last_observed': round(obs, 4)}
+        data[last['key']] = {'margin': new, 'n': int(old['n']) + 1, 'last_observed': round(obs, 4),
+                             'feature_fingerprint': last.get('feature_fingerprint'),
+                             'physics_sha256': last.get('physics_sha256')}
         self._knee_save_margins(data)
         self._event('knee_margin_learned', key=last['key'], observed=round(obs, 4), old=old['margin'], new=new, n=data[last['key']]['n'])
         self.gcode.respond_info('DEEP CALIBRATION: knee margin for %s learned: you kept Z %.4f, %.4f above the knee; margin %.4f -> %.4f'
@@ -1102,6 +1184,14 @@ class DeepCalibration:
                 gcmd.get_float('FILAMENT', 1.75))
         except ValueError as exc:
             raise gcmd.error(str(exc))
+        if self.slicer.enabled:
+            fingerprint = gcmd.get('FINGERPRINT', None)
+            gate = self.slicer.last_gate or {}
+            if fingerprint is None and gate.get('eligible'):
+                fingerprint = gate.get('fingerprint')
+            if not isinstance(fingerprint, str) or not re.fullmatch('[a-f0-9]{64}', fingerprint):
+                raise gcmd.error('Use FINGERPRINT=<recorded segment fingerprint> or seed during an eligible recording; legacy unscoped margins are preserved')
+            key += '_ctx' + fingerprint
         old = data.get(key, {'margin': self.knee_cfg['margin'], 'n': 0})
         if gcmd.get_int('RESET', 0):
             data.pop(key, None); self._knee_save_margins(data)
@@ -1127,6 +1217,8 @@ class DeepCalibration:
         params['MATERIAL'] = recipe['material']
         if 'RUN' in params and not re.fullmatch(r'[A-Za-z0-9_-]{1,48}', str(params['RUN'])):
             raise gcmd.error('DEEP CALIBRATION: invalid RUN identifier')
+        self.slicer.path = None
+        self.slicer.request()
         self.armed = dict(params=params, recipe=recipe, seen=False)
         gcmd.respond_info('DEEP CALIBRATION: armed for this print (%s, first layer %.2f mm): recording starts with '
                           'the first layer, babysteps label the offsets, and it stops when layer %d starts'
@@ -1176,6 +1268,9 @@ class DeepCalibration:
                                      reserve_bytes=self.sensors.reserve_bytes)
         except OSError as exc:
             raise gcmd.error('DEEP CALIBRATION: cannot open log: '+str(exc))
+        self.slicer.request()
+        self.slicer.reset_gate()
+        self.slicer.emitted_hash = None
         self.recipe, self.label = recipe, 'UNLABELLED'
         self.adjustment_since = now
         self.started, self.deadline = now, now+seconds
@@ -1187,7 +1282,7 @@ class DeepCalibration:
         config = self.settings
         bm = self.printer.lookup_object('bed_mesh',None)
         self._write(dict(type='session',schema=1,version=VERSION,t=now,run=run,
-                         printer_id=printer_id,
+                         printer_id=printer_id, slicer_context=self.slicer.status(),
                          utc=time.time(),recipe=recipe,source=self.source,
                          baseline=self.baseline,counts_per_gram=self.cpg or None,
                          configured_probe=config.get('probe'),
@@ -1294,6 +1389,7 @@ class DeepCalibration:
         return dict(self._auto_status(),host_time=eventtime,version=VERSION,recording=self.active,connected=self.reader is not None,
                     source=self.source,last_sample=self.last_sample,
                     polling_accelerated=self.poll_saved is not None,
+                    slicer_context=self.slicer.status(), segment_eligibility=self.slicer.last_gate,
                     probe_approach=self._status('deep_calibration_approach',eventtime),
                     age=eventtime-self.last_sample['t'] if self.last_sample else None,
                     baseline=self.baseline,recipe=self.recipe,label=self.label,

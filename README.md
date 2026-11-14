@@ -1,10 +1,10 @@
-> **OrcaSlicer factor review:** the full 378-setting audit for OrcaSlicer 2.5.0-dev 606b50f1 is in [the factor review](reference/orca_606b50f1/ORCA_FACTOR_REVIEW.md). It documents additional inputs/segment gates needed; this documentation does not claim they are already captured by beta10.1.
+> **OrcaSlicer factor review:** the full 378-setting audit for OrcaSlicer 2.5.0-dev 606b50f1 is in [the factor review](reference/orca_606b50f1/ORCA_FACTOR_REVIEW.md). Beta 10.2 captures exported settings and applies the segment gates described below. Unexported scoped settings remain unknown.
 
 # Deep Calibration
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.1 (2026-11-14). **Current official development continuation of beta 9.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
+Version 0.1.0-beta.10.2 (2026-11-14). **Current official development continuation of beta 9.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
 
 ## Contents
 
@@ -80,7 +80,7 @@ Over SSH:
 ```sh
 sh /usr/data/config/mod_data/deep_calibration_development_beta/install_deep_calibration.sh
 ```
-It links the four Python modules (`deep_calibration.py`, `deep_calibration_sensors.py`, `deep_calibration_mesh.py`, `deep_calibration_approach.py`) into Klipper's extras folder. It never writes `user.cfg` or zMod's files, and refuses to overwrite a file of the same name that is not its own link. Run it again after every update.
+It links the five Python modules (`deep_calibration.py`, `deep_calibration_sensors.py`, `deep_calibration_mesh.py`, `deep_calibration_approach.py`, `deep_calibration_gcode.py`) into Klipper's extras folder. It never writes `user.cfg` or zMod's files, and refuses to overwrite a file of the same name that is not its own link. Run it again after every update.
 
 ### 5. zMod settings and restart
 
@@ -189,9 +189,47 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
 
+## Beta 10.2: slicer context without longer start G-code
+
+Keep your existing `DEEP_CALIBRATION_ARM MATERIAL=... HEIGHT=... WIDTH=... SPEED=... FILAMENT=...` line, Auto Trim preparation and layer hooks. No new slicer placeholders or per-setting G-code commands are required. Replace the complete package folder, rerun the installer, and restart while idle; it now links a fifth module. Check `DEEP_CALIBRATION_STATUS` for **0.1.0-beta.10.2**.
+
+### Automatic file capture
+
+With `gcode_context: True` (default), the plugin reads the selected virtual-SD file on a separate handle in a background thread. It hashes the complete UTF-8 G-code, reads Orca's header/footer config block and retains all exported keys verbatim, including percentages, arrays, disabled options and future unknown keys. Coverage against the pinned 378-key process registry lists exported and missing keys. Missing values are not filled from defaults. Cached parsed contents are keyed by file/settings hashes; replacement files and changed sidecars invalidate the active snapshot.
+
+The full settings snapshot is stored once as a `slicer_snapshot` event. Each force sample contains `slicer_context`: emitted role, local height/width, feed, E/mm, tool/object identity, selected material/filament/nozzle dimensions, physics fingerprint and eligibility reasons. Live heater readings/targets, fan commands, pressure advance, overrides and mesh identity are recorded. The existing ARM recipe remains as declared metadata; emitted dimensions and actual extrusion velocity are used by the new analysis where available.
+
+### Which readings can feed a knee search
+
+Native G0/G1/G2/G3 handlers retain their normal behavior and errors. Read-only lookahead callbacks associate indexed commands with native print-clock intervals; samples use the motion queue at host receipt, not the latest queued file position. Cached motion status, nested macro motion, modified command parameters and ambiguous/missing timing do not qualify. ADC acquisition/serial latency is still unknown; this is an association with requested motion at receipt, not an encoder or an exact ADC timestamp.
+
+Eligible samples require verified first-layer model extrusion, emitted geometry, settled temperatures, known live PA/fan/override/mesh conditions, and sufficiently steady commanded speed/extrusion. Supports, skirt/brim, tower/purge, bridge, ironing, unknown roles, Z-moving paths, arcs, raft, mixed-color layers, spiral mode, model flushing and scarf walls are excluded as applicable. Relevant settings and selected material dimensions remain in the identity. Multi-material/remapped tool variants are excluded unless a single used-filament mapping can be established from the exported file; a plain single-material file needs no additional hook.
+
+Default `segment_settle: 0.5` seconds discards settling after speed/travel transitions. Retractions and a changed extrusion recipe also impose at least 2 seconds of history settling. This is a conservative software policy, not a physically validated pressure-decay model. Only accepted sample time counts toward a knee hold; travel does not count and does not cause the search to step down. Accepted same-recipe samples can accumulate across rejected transitions after settling. An insufficient measurement window or prolonged absence of suitable extrusion stops the search and restores its original offset. Changes to the eligible role/geometry/flow recipe or live PA/thermal/fan/mesh conditions abort it. Descending fit selection and longer ascending diagnostics remain.
+
+Recording remains available when source context is missing or unsupported. Automatic fitting waits/refuses and reports why; it does not silently fall back. `gcode_context: False` explicitly restores the older beta10.1 eligibility policy and unscoped margin keys.
+
+### Learned margins and analysis
+
+New automatic margins append the full segment/physics fingerprint to the existing material/height/width/speed/filament/nominal-flow key. Old entries remain saved and are not reused automatically. Filename/output-name/notes-only changes do not change the physics identity; unknown settings and custom G-code bodies stay in it. Offline summaries, GOOD pairing and experimental models also keep fingerprints separate. Source exclusions remain after manual relabelling.
+
+An explicit `MARGIN=` still permits a one-off search and is not learned. To initialize a learnable entry, run the existing `DEEP_CALIBRATION_KNEE_MARGIN` command with the same ARM recipe dimensions during an eligible recording; it binds to the current fingerprint. Alternatively provide `FINGERPRINT=<64-character fingerprint from the recording/status>`. The existing start G-code needs no additional parameters. User-adjustment learning requires matching recent eligible context and unchanged live conditions.
+
+### Optional project snapshot
+
+The emitted global config does not reveal every inherited object/modifier or filament-variant setting. To archive an Orca project alongside it, run on your computer after the final G-code has been produced:
+
+```sh
+python export_slicer_snapshot.py print.gcode --project project.3mf
+```
+
+Upload both `print.gcode` and `print.gcode.dc.json` into the same printer directory. No exporter is run on the printer and no start-G-code command is added. The sidecar archives the project's metadata settings parts, including scoped XML/JSON, and is bound to the exact G-code SHA-256. It never promotes a modifier to a global setting or guesses inheritance. Raw and physics settings hashes are separate; stale/tampered sidecars cannot silently supply settings. An existing sidecar is not overwritten. This is optional provenance capture, not a claim that all 378 settings are independently resolved into physical model features.
+
+See `BETA10_2_IMPLEMENTATION.md` for limits and validation. Physical printer validation remains pending.
+
 ## Beta 10.1: flow-aware knee search and temporary fast polling
 
-Beta 10.1 is the official continuation of the existing Deep Calibration development beta and supersedes beta 9. It is the current working baseline, not a separate experimental fork. This version is published on the repository's `beta` branch; the stable `main` branch is separate. Keep official Auto Trim 3.9.13 separate; there is no bundled Auto Trim. Replace the complete Deep Calibration folder, rerun its existing installer, and restart while idle. Check DEEP_CALIBRATION_STATUS for 0.1.0-beta.10.1. If updating Python does not load the new version on your zMod setup, use a full printer reboot. Publishing this source does not install it on your printer.
+Beta 10.1 is the official continuation of the existing Deep Calibration development beta and supersedes beta 9. It is the current working baseline, not a separate experimental fork. This version is published on the repository's `beta` branch; the stable `main` branch is separate. Keep official Auto Trim 3.9.13 separate; there is no bundled Auto Trim. Replace the complete Deep Calibration folder, rerun its existing installer, and restart while idle. The beta10.1 changes below are retained in beta10.2. If updating Python does not load the new version on your zMod setup, use a full printer reboot. Publishing this source does not install it on your printer.
 
 ### Polling
 

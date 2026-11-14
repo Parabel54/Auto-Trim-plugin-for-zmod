@@ -1,0 +1,15 @@
+# Beta 10.2 implementation and review
+
+This extends beta10.1 in place. Runtime additions are in deep_calibration_gcode.py and its recorder/analysis integration. No start-G-code expansion, tuning pattern, serial polling replacement, live printer installation or stable Auto Trim changes are included.
+
+The parser retains all exported config keys, reports coverage against the pinned process catalog and indexes only first-layer emitted commands. It is not a full slicer or a general G-code interpreter. Unknown geometry/roles, binary/numbered input, unresolved variants, missing macros, invalid settings and unsupported timing fail fit eligibility. A single exported used-filament header can map the active entry in simple arrays; complex variant remapping remains unsupported.
+
+Motion callbacks preserve native command return values/errors and never send commands. Native G-code errors propagate unchanged; annotation failures disable attribution. No parser seeks on virtual_sdcard's open file. The background scan has file/line/settings/index resource bounds and cancel checks. Cache hits retain the new file's stat identity. Changes after scanning invalidate attribution. The two-entry cache is keyed by actual file and sidecar settings hashes.
+
+Force data is always retained. Receipt-clock motion association is not ADC-clock synchronization: board conversion/serial latency remains unknown. Settling/rate gates reduce transition contamination but do not prove independent readings or uniquely distinguish stored pressure, neighboring squeezed lines and a bed feature. Neighborhood collision reconstruction and a complete effective modifier resolver are not implemented. Clean fixed-offset and recipe-transfer confirmation prints remain necessary.
+
+New margins use declared material/dimensions plus emitted conditions/settings identity. Legacy keys remain on disk. One-off explicit margins stay one-off; manual seeds bind to a recorded context, then successful non-fixed searches can learn after user adjustment under matching conditions. Unknown settings stay in the fingerprint. Model fitting and GOOD references are separated by context.
+
+The optional project exporter reads only metadata config/JSON entries from a ZIP in memory; it does not extract archive paths. It exclusively creates a sidecar and binds its raw and physics hashes to the final G-code. These are integrity/provenance checks, not authentication of slicer settings. It archives scoped settings without claiming to resolve them.
+
+Validation exercises exported 378-key retention, footer/header parsing, parameter units/lists, excluded roles, absolute/relative E, malformed inputs, single-filament mapping, queue-ahead timing, native handler preservation, annotation failures, background cursor isolation, live condition transitions, force-window eligibility, complete simulated knee selection/restoration, fingerprinted seeds, legacy rejection, scoped sidecar handling and offline label/reference isolation. Existing capture, continuous sensors, approach, soak, installer and knee tests are retained. Physical validation is pending.
