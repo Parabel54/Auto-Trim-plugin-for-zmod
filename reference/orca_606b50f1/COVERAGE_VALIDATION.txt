@@ -1,0 +1,7 @@
+PASS: exact screenshot version OrcaSlicer2.5.0-dev606b50f1 used.
+PASS: 378 unique explicit process bindings across six tabs; no visibility filtering.
+PASS: all378 definitions, classification decisions and source links resolved.
+PASS: 61 developer-mode literal-key definitions retained, including material/machine/internal settings.
+PASS: CSV and JSON contain the same378 process fields.
+PASS: source SHA256 metadata retained.
+LIMIT: source review only; actual user preset values were not provided; no UI or printer execution.

@@ -236,7 +236,7 @@ class DeepCalibrationMesh:
 
     def get_status(self, eventtime):
         return {'tracing': self.until is not None, 'samples': len(self.samples),
-                'diagnostics_read_only': True, 'version': '0.1.0-beta.8',
+                'diagnostics_read_only': True, 'version': '0.1.0-beta.10.1',
                 'travel_test_running': self.travel_running,
                 'last_sample': self.samples[-1] if self.samples else None,
                 'startup_installed': self.startup_installed}

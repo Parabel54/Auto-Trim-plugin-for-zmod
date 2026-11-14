@@ -251,7 +251,41 @@ def fit(pairs, extra_features=()):
     return models
 
 
-def analyze(paths, output, settle=5., want_fit=False, vibration=True):
+LABELS = ('GOOD','TOO_HIGH','TOO_LOW')
+
+def parse_relabel(items):
+    """'-0.125=TOO_LOW' -> [(-0.125, 'TOO_LOW')]"""
+    out=[]
+    for item in items or []:
+        try:
+            z,label=item.split('=',1); z=float(z); label=label.strip().upper()
+        except ValueError:
+            raise ValueError('--relabel takes OFFSET=LABEL, for example -0.125=TOO_LOW: '+item)
+        if not math.isfinite(z) or label not in LABELS:
+            raise ValueError('--relabel label must be GOOD, TOO_HIGH or TOO_LOW: '+item)
+        out.append((z,label))
+    return out
+
+def apply_relabel(runs, relabels):
+    """A label judged after the print (a scrape on layer 2, a peel test)
+    replaces the label recorded during it, for first-layer readings at that
+    offset. Marked as such, never as a print-time label."""
+    counts={}
+    for z,label in relabels:
+        for run in runs:
+            for row in run['samples']:
+                if (row.get('layer')==1 and finite(row.get('offset_z')) and abs(row['offset_z']-z)<0.0005
+                        and row.get('label') in LABELS+('UNLABELLED',)):
+                    row['label']=label
+                    row['label_source']='relabelled_after_print'
+                    row['label_inferred']=False
+                    reasons=[v for v in row['rejection'].split(';') if v and v!='unlabelled_or_transition']
+                    row['eligible']=not reasons
+                    row['rejection']=';'.join(reasons)
+                    counts['%+.4f=%s'%(z,label)]=counts.get('%+.4f=%s'%(z,label),0)+1
+    return counts
+
+def analyze(paths, output, settle=5., want_fit=False, vibration=True, relabel=None):
     paths=[Path(path) for path in paths]
     if len({path.resolve() for path in paths})!=len(paths):
         raise ValueError('duplicate input session: each capture must be analyzed once')
@@ -259,6 +293,7 @@ def analyze(paths, output, settle=5., want_fit=False, vibration=True):
         raise ValueError('session filenames must be unique: matching names would merge labels or leak into validation')
     output=Path(output);output.mkdir(parents=True,exist_ok=True)
     runs=[load_run(Path(path),settle) for path in paths]
+    relabelled=apply_relabel(runs, parse_relabel(relabel))
     vibration_reports={}
     if vibration:
         from vibration_analysis import analyze_vibration
@@ -289,7 +324,7 @@ def analyze(paths, output, settle=5., want_fit=False, vibration=True):
     rows=[s for run in runs for s in run['samples']]
     with open(output/'samples.csv','w',newline='') as stream:
         writer=csv.DictWriter(stream,fieldnames=FIELDS);writer.writeheader();writer.writerows(rows)
-    report=dict(schema=1,software_analysis_only=True,
+    report=dict(schema=1,software_analysis_only=True,relabelled=relabelled,
                 vibration=vibration_reports,
                 limitations=['force does not uniquely identify gap','deposited material weight and label order can confound force; counterbalance offset trials',
                              'input-shaper frequencies can exceed native Nyquist limit',
@@ -347,9 +382,19 @@ def main():
     parser.add_argument('--settle',type=float,default=5.,help='exclude seconds after observed label/offset/recipe/fan change')
     parser.add_argument('--fit',action='store_true',help='attempt a retrospective model with whole-run holdout')
     parser.add_argument('--skip-vibration',action='store_true',help='export force/ADC only; does not certify missing acceleration files')
+    parser.add_argument('--relabel',action='append',metavar='OFFSET=LABEL',help='correct the label of first-layer readings at an offset after the print, e.g. -0.125=TOO_LOW (repeatable)')
     args=parser.parse_args()
     if not math.isfinite(args.settle) or args.settle<2: parser.error('--settle must be >=2 seconds')
-    report=analyze(args.logs,args.output,args.settle,args.fit,not args.skip_vibration)
+    try:
+        parse_relabel(args.relabel)          # check before loading anything
+    except ValueError as exc:
+        parser.error(str(exc))
+    try:
+        report=analyze(args.logs,args.output,args.settle,args.fit,not args.skip_vibration,args.relabel)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if report.get('relabelled'):
+        print('Relabelled after the print: '+', '.join('%s (%d readings)'%(k,v) for k,v in sorted(report['relabelled'].items())))
     print('Wrote samples.csv and report.json; %d stable segments, %d GOOD-paired segments.'%
           (len(report['segments']),len(report['paired_segments'])))
     print('Experimental offline analysis only. No printer settings were changed.')

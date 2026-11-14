@@ -20,7 +20,7 @@ except ImportError:
     from deep_calibration_sensors import SensorExtension
     from deep_calibration_mesh import DeepCalibrationMesh
 
-VERSION = '0.1.0-beta.8'
+VERSION = '0.1.0-beta.10.1'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -188,22 +188,29 @@ class DeepCalibration:
         # Calibration that changes the print. During the first layer it lowers
         # the nozzle in small steps until the load cell shows the steep rise
         # where the nozzle starts pressing the line, then backs off by a margin.
+        self.poll_saved = None
+        self.poll_accelerate = config.getboolean('poll_accelerate', True)
+        self.knee_require_margin = config.getboolean('knee_require_margin', True)
         self.knee_cfg = dict(
             start=config.getfloat('knee_start', .10, minval=0., maxval=.5),
             step=config.getfloat('knee_step', .01, minval=.002, maxval=.05),
             hold=config.getfloat('knee_hold', 6., minval=2., maxval=60.),
             hold_max=config.getfloat('knee_hold_max', 20., minval=2., maxval=120.),
+            fast_hold=config.getfloat('knee_fast_hold', 2., minval=2., maxval=60.),
+            up_hold=config.getfloat('knee_up_hold', 12., minval=6., maxval=120.),
+            up_settle=config.getfloat('knee_up_settle', 6., minval=1.5, maxval=120.),
             se=config.getfloat('knee_se_g', 2., minval=.1, maxval=50.),
             rise=config.getfloat('knee_rise_g', 12., minval=1., maxval=500.),
             rise_min=config.getfloat('knee_rise_min_g', 6., minval=1., maxval=500.),
             noise_k=config.getfloat('knee_noise_k', 4., minval=1., maxval=20.),
-            margin=config.getfloat('knee_margin', .025, minval=0., maxval=.2),
+            # Legacy fallback only; unlearned recipes require explicit MARGIN by default.
+            margin=config.getfloat('knee_margin', .125, minval=0., maxval=.3),
             max_force=config.getfloat('knee_max_force_g', 80., minval=5., maxval=2000.),
             travel=config.getfloat('knee_max_travel', .35, minval=.02, maxval=1.),
             min_readings=config.getint('knee_min_readings', 8, minval=3, maxval=200),
             confirm=config.getboolean('knee_confirm', True),
             learn_rate=config.getfloat('knee_learn_rate', .5, minval=0., maxval=1.))
-        # Learned margins per material and first-layer height
+        # Flow-keyed margins; legacy height-only entries are never auto-migrated.
         self.knee_margin_file = os.path.join(self.directory, 'knee_margins.json')
         self.knee_last = None
         self.knee = None
@@ -341,9 +348,32 @@ class DeepCalibration:
                      if name == 'fan' or name.startswith(('fan_generic ', 'heater_fan ', 'controller_fan ', 'temperature_fan '))]
         self.reactor.update_timer(self.timer, self.reactor.monotonic())
 
+    def _poll_begin(self):
+        # Only a recognized patched native driver is eligible. No firmware
+        # installation, WAIT changes, or extra serial polling by the recorder.
+        if (not self.active or not self.poll_accelerate or self.poll_saved is not None
+                or not callable(getattr(self.reader, 'cmd_LOAD_CELL_POLL', None))):
+            return
+        old = getattr(self.reader, 'poll_time', None)
+        if not finite(old) or old < 0:
+            return
+        self.poll_saved = (self.reader, old)
+        self.reader.poll_time = 0.
+        self._event('poll_policy', pause=0., previous_pause=old,
+                    wait=getattr(self.reader, 'poll_wait', .05), measured_board_ceiling_hz=10.)
+
+    def _poll_restore(self):
+        saved = self.poll_saved
+        if saved is not None:
+            saved[0].poll_time = saved[1]
+            self.poll_saved = None
+
     def _shutdown(self):
-        if self.active:
-            self._end('printer_shutdown')
+        try:
+            if self.active:
+                self._end('printer_shutdown')
+        finally:
+            self._poll_restore()
 
     def _disconnect(self):
         self._shutdown()
@@ -461,6 +491,7 @@ class DeepCalibration:
 
     def _write(self, record):
         if self.writer and not self.writer.put(record):
+            self._poll_restore()
             self.active = False
             self.gcode.respond_info('DEEP CALIBRATION: recording stopped: '+str(self.writer.error))
             self.writer.close()
@@ -488,6 +519,7 @@ class DeepCalibration:
             if self.active:
                 self.sensors.tick(now)
                 if self.writer.error:
+                    self._poll_restore()
                     self.active = False
                     self.writer.close()
                     self.sensors.stop()
@@ -697,8 +729,8 @@ class DeepCalibration:
 
     def _knee_next_window(self, now):
         k = self.knee
-        begin = now + self._queue_lead(now) + 1.5
-        k['window'] = [begin, begin + k['cfg']['hold_max']]
+        begin = now + self._queue_lead(now) + (k['cfg']['up_settle'] if k['phase'] == 'up' else 1.5)
+        k['window'] = [begin, begin + max(k['cfg']['hold_max'], k['cfg']['up_hold'] if k['phase'] == 'up' else 0.)]
         k['readings'] = []
 
     @staticmethod
@@ -741,9 +773,21 @@ class DeepCalibration:
         diffs = [abs(flat[i] - flat[i - 1]) for i in range(1, len(flat))]
         return 1.4826 * self._median(diffs) / 2 ** .5
 
-    def _knee_key(self):
+    def _knee_key(self, material=None, flow=None, height=None, width=None, speed=None, filament=None):
         r = self.recipe or {}
-        return '%s_%.2f' % (str(r.get('material', 'PLA')).lower().replace('-', '_').replace(' ', '_'), float(r.get('height', .2)))
+        h = float(height if height is not None else r.get('height', .2))
+        w = float(width if width is not None else r.get('width', .45))
+        v = float(speed if speed is not None else r.get('speed', 40.))
+        f = float(filament if filament is not None else r.get('filament', 1.75))
+        if not all(finite(x) and x > 0 for x in (h, w, v, f)):
+            raise ValueError('Knee recipe dimensions and speed must be finite and positive')
+        q = h * w * v
+        if not finite(q):
+            raise ValueError('Knee nominal flow must be finite')
+        if flow is not None and (not finite(flow) or abs(flow-q) > max(.001, q * .001)):
+            raise ValueError('FLOW must match HEIGHT * WIDTH * SPEED (within 0.1 percent)')
+        mat = str(material or r.get('material', 'PLA')).lower().replace('-', '_').replace(' ', '_')
+        return '%s_h%.4f_w%.4f_s%.4f_f%.4f_q%.4f' % (mat, h, w, v, f, q)
 
     def _knee_margins(self):
         try:
@@ -770,12 +814,19 @@ class DeepCalibration:
         k['steps'] = []
         k['candidate'] = None
         k['key'] = self._knee_key()
+        k['motion_factors'] = [context['gcode'].get('speed_factor'), context['gcode'].get('extrude_factor')]
         if k.get('margin_fixed') is None:
             m = self._knee_margins().get(k['key'])
+            if m is None and self.knee_require_margin:
+                self.knee = None
+                raise ValueError('Uncalibrated flow recipe: specify MARGIN explicitly or set DEEP_CALIBRATION_KNEE_MARGIN MATERIAL=... HEIGHT=... WIDTH=... SPEED=... MARGIN=...; no universal margin is established')
             k['margin'] = float(m['margin']) if m else k['cfg']['margin']
             k['margin_src'] = ('learned from %d print%s' % (m['n'], '' if m['n'] == 1 else 's')) if m else 'default'
         else:
             k['margin'] = k['margin_fixed']; k['margin_src'] = 'set on the command'
+        if not finite(k['margin']) or not 0 <= k['margin'] <= .3:
+            self.knee = None
+            raise ValueError('Knee margin must be finite and in 0..0.3 mm')
         self._knee_move(k['cfg']['start'])
         self._knee_next_window(now)
         self._event('knee_start', original=k['original'], start=k['offset'], floor=k['floor'], cfg=k['cfg'],
@@ -818,20 +869,27 @@ class DeepCalibration:
         or HOLD_MAX is reached. Returns (g, n, se), 'wait', or 'skip'."""
         k = self.knee
         w0 = k['window'][0]
-        if now < w0 + k['cfg']['hold']:
-            return 'wait'
         vals = k['readings']; n = len(vals)
+        elapsed = now - w0
+        hold = k['cfg']['hold']
+        if k['phase'] == 'up':
+            hold = max(hold, k['cfg']['up_hold'])
+        elif self.poll_saved is not None and elapsed > 0 and n / elapsed >= 8.:
+            hold = min(hold, k['cfg']['fast_hold'])
+        hold_max = max(k['cfg']['hold_max'], hold)
+        if now < w0 + hold:
+            return 'wait'
         cpg = self.cpg or 43.
         if n >= k['cfg']['min_readings']:
             med = self._median(vals)
             sd = statistics.pstdev(vals) / cpg
             se = 1.2533 * sd / n ** .5
-            if se <= k['cfg']['se'] or now >= w0 + k['cfg']['hold_max']:
+            if se <= k['cfg']['se'] or now >= w0 + hold_max:
                 if k.get('ref') is None:
                     k['ref'] = med
                 return ((med - k['ref']) / cpg, n, se)
             return 'wait'
-        return 'skip' if now >= w0 + k['cfg']['hold_max'] else 'wait'
+        return 'skip' if now >= w0 + hold_max else 'wait'
 
     def _knee_tick(self, now, context):
         k = self.knee
@@ -850,6 +908,9 @@ class DeepCalibration:
             return self._knee_stop(now, context, 'print not running', restore=True)
         if layer is not None and layer >= 2:
             return self._knee_stop(now, context, 'the first layer ended before a knee was found', restore=True)
+        factors = [context['gcode'].get('speed_factor'), context['gcode'].get('extrude_factor')]
+        if self._knee_key() != k['key'] or factors != k['motion_factors']:
+            return self._knee_stop(now, context, 'recipe or speed/extrusion override changed', restore=True)
         m = self._knee_measure(now)
         if m == 'wait':
             return
@@ -938,12 +999,13 @@ class DeepCalibration:
         turn = [min(rising_down, key=lambda st: st['offset'])] if rising_down else []
         fit_up = self._knee_fit(down_flat + turn + ups, k['knee_threshold'])
         knee_up = fit_up[0] if fit_up else None
-        fit_all = self._knee_fit(down_flat + rising_down + ups, k['knee_threshold'])
-        knee = fit_all[0] if fit_all else k['knee_down']
+        # Ascending data may be contaminated by pressure/path history.
+        # Report its disagreement; do not move the descending estimate.
+        knee = k['knee_down']
         rep = round(abs(knee_up - k['knee_down']), 4) if knee_up is not None else None
         return self._knee_stop(now, context, 'knee', target=round(knee + k['margin'], 4), knee=knee,
                                extra=dict(knee_threshold=k['knee_threshold'], knee_down=k['knee_down'],
-                                          knee_up=knee_up, repeatability=rep, fitted=fit_all is not None))
+                                          knee_up=knee_up, repeatability=rep, fitted=True, estimate_source='descending_only'))
 
     def _knee_advance(self, now, context):
         k = self.knee
@@ -967,17 +1029,20 @@ class DeepCalibration:
             return
         kept = float(self._status('gcode_move', self.reactor.monotonic()).get('homing_origin', [0, 0, 0])[2])
         obs = kept - last['knee']
+        if not finite(obs) or not 0 <= obs <= .3:
+            self._event('knee_margin_rejected', observed=obs)
+            return
         data = self._knee_margins()
         old = data.get(last['key'], {'margin': last['margin'], 'n': 0})
         rate = self.knee_cfg['learn_rate']
-        new = round(min(max(old['margin'] + rate * (obs - old['margin']), 0.), .2), 4)
+        new = round(min(max(old['margin'] + rate * (obs - old['margin']), 0.), .3), 4)
         data[last['key']] = {'margin': new, 'n': int(old['n']) + 1, 'last_observed': round(obs, 4)}
         self._knee_save_margins(data)
         self._event('knee_margin_learned', key=last['key'], observed=round(obs, 4), old=old['margin'], new=new, n=data[last['key']]['n'])
         self.gcode.respond_info('DEEP CALIBRATION: knee margin for %s learned: you kept Z %.4f, %.4f above the knee; margin %.4f -> %.4f'
                                 % (last['key'].replace('_', ' ').upper(), kept, obs, old['margin'], new))
 
-    cmd_KNEE_help = 'Knee search: lower the nozzle during the first layer until the load cell shows the nozzle pressing, then back off by a margin. ARM=1 waits for the first layer of an armed recording'
+    cmd_KNEE_help = 'Knee search (explicit/learned flow margin required): lower the nozzle during the first layer until the load cell shows the nozzle pressing, then back off by a margin. ARM=1 waits for the first layer of an armed recording'
     def cmd_KNEE(self, gcmd):
         if self.knee is not None:
             raise gcmd.error('DEEP CALIBRATION: a knee search is already running (DEEP_CALIBRATION_KNEE_ABORT)')
@@ -987,7 +1052,13 @@ class DeepCalibration:
                           ('max_force', 'MAX_FORCE'), ('travel', 'TRAVEL')):
             cfg[key] = gcmd.get_float(name, cfg[key], minval=0.)
         cfg['confirm'] = bool(gcmd.get_int('CONFIRM', 1 if cfg['confirm'] else 0))
+        if not all(finite(v) for key, v in cfg.items() if key != 'confirm'):
+            raise gcmd.error('Knee settings must be finite')
         margin = gcmd.get('MARGIN', None)
+        if margin is not None:
+            margin = float(margin)
+            if not finite(margin) or not 0 <= margin <= .3:
+                raise gcmd.error('MARGIN must be finite and in 0..0.3 mm')
         if not (0 < cfg['step'] <= .05 and cfg['hold'] >= 2 and cfg['hold_max'] >= cfg['hold'] and cfg['travel'] >= cfg['step']):
             raise gcmd.error('DEEP CALIBRATION: STEP 0 to 0.05 mm, HOLD at least 2 s, HOLD_MAX at least HOLD, TRAVEL at least one STEP')
         self.knee = dict(cfg=cfg, phase='wait', own_move=False, readings=[], window=[0., 0.], ref=None,
@@ -1013,7 +1084,7 @@ class DeepCalibration:
         now = self.reactor.monotonic()
         self._knee_stop(now, self.last_context or self._context(now), 'stopped by you', restore=True)
 
-    cmd_KNEE_MARGIN_help = 'Show the learned knee margins; MATERIAL= HEIGHT= with MARGIN=, ADJUST= or RESET=1 changes one'
+    cmd_KNEE_MARGIN_help = 'Show the learned knee margins; MATERIAL= HEIGHT= WIDTH= SPEED= [FILAMENT=] with MARGIN=, ADJUST= or RESET=1 changes one'
     def cmd_KNEE_MARGIN(self, gcmd):
         data = self._knee_margins()
         mat = gcmd.get('MATERIAL', None)
@@ -1022,15 +1093,23 @@ class DeepCalibration:
                 gcmd.respond_info('DEEP CALIBRATION: no learned knee margins yet (default %.3f)' % self.knee_cfg['margin']); return
             lines = ['%s: %.4f (%d print%s)' % (k.replace('_', ' ').upper(), v['margin'], v['n'], '' if v['n'] == 1 else 's') for k, v in sorted(data.items())]
             gcmd.respond_info('DEEP CALIBRATION: knee margins: ' + '; '.join(lines)); return
-        key = '%s_%.2f' % (str(mat).lower().replace('-', '_').replace(' ', '_'), gcmd.get_float('HEIGHT', .2, minval=.02, maxval=1.))
+        if any(gcmd.get(name, None) is None for name in ('HEIGHT', 'WIDTH', 'SPEED')):
+            raise gcmd.error('Use MATERIAL=... HEIGHT=... WIDTH=... SPEED=... [FILAMENT=1.75] [FLOW=...]; flow-only/height-only margins are legacy')
+        try:
+            key = self._knee_key(mat,
+                None if gcmd.get('FLOW', None) is None else gcmd.get_float('FLOW'),
+                gcmd.get_float('HEIGHT'), gcmd.get_float('WIDTH'), gcmd.get_float('SPEED'),
+                gcmd.get_float('FILAMENT', 1.75))
+        except ValueError as exc:
+            raise gcmd.error(str(exc))
         old = data.get(key, {'margin': self.knee_cfg['margin'], 'n': 0})
         if gcmd.get_int('RESET', 0):
             data.pop(key, None); self._knee_save_margins(data)
             gcmd.respond_info('DEEP CALIBRATION: knee margin for %s reset to the default %.3f' % (key.replace('_', ' ').upper(), self.knee_cfg['margin'])); return
         if gcmd.get('MARGIN', None) is not None:
-            new = gcmd.get_float('MARGIN', minval=0., maxval=.2)
+            new = gcmd.get_float('MARGIN', minval=0., maxval=.3)
         elif gcmd.get('ADJUST', None) is not None:
-            new = min(max(old['margin'] + gcmd.get_float('ADJUST'), 0.), .2)
+            new = min(max(old['margin'] + gcmd.get_float('ADJUST'), 0.), .3)
         else:
             gcmd.respond_info('DEEP CALIBRATION: knee margin for %s: %.4f (%d print%s)' % (key.replace('_', ' ').upper(), old['margin'], old['n'], '' if old['n'] == 1 else 's')); return
         data[key] = {'margin': round(new, 4), 'n': int(old['n']), 'set_by_hand': True}
@@ -1126,6 +1205,7 @@ class DeepCalibration:
             self._event('sensor_start_error',error=str(exc))
             self._end('sensor_start_error')
             raise gcmd.error('DEEP CALIBRATION: continuous sensor startup failed: '+str(exc))
+        self._poll_begin()
         gcmd.respond_info('DEEP CALIBRATION: live recording started: '+self.writer.path+
                           '. MARK labels/SET record metadata; they do not move or change printing.')
 
@@ -1155,6 +1235,7 @@ class DeepCalibration:
                 self.active=False
                 self.writer.close()
         finally:
+            self._poll_restore()
             self.ending=False
 
     def cmd_STOP(self, gcmd):
@@ -1175,7 +1256,10 @@ class DeepCalibration:
 
     def cmd_SET(self, gcmd):
         if not self.active: raise gcmd.error('DEEP CALIBRATION: start recording first')
+        if self.knee is not None:
+            raise gcmd.error('Abort the knee search before changing its recipe')
         self.recipe = self._recipe(gcmd,self.recipe)
+        self.knee_last = None
         self._event('recipe',recipe=self.recipe)
         gcmd.respond_info('DEEP CALIBRATION: metadata updated; printer speed/fan/extrusion were not changed')
 
@@ -1209,6 +1293,7 @@ class DeepCalibration:
         delta = self.last_sample['filtered_raw']-self.baseline['raw'] if valid else None
         return dict(self._auto_status(),host_time=eventtime,version=VERSION,recording=self.active,connected=self.reader is not None,
                     source=self.source,last_sample=self.last_sample,
+                    polling_accelerated=self.poll_saved is not None,
                     probe_approach=self._status('deep_calibration_approach',eventtime),
                     age=eventtime-self.last_sample['t'] if self.last_sample else None,
                     baseline=self.baseline,recipe=self.recipe,label=self.label,

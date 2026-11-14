@@ -1,8 +1,10 @@
+> **OrcaSlicer factor review:** the full 378-setting audit for OrcaSlicer 2.5.0-dev 606b50f1 is in [the factor review](reference/orca_606b50f1/ORCA_FACTOR_REVIEW.md). It documents additional inputs/segment gates needed; this documentation does not claim they are already captured by beta10.1.
+
 # Deep Calibration
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.8 (2026-11-12). **Development beta.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
+Version 0.1.0-beta.10.1 (2026-11-14). **Current official development continuation of beta 9.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
 
 ## Contents
 
@@ -62,7 +64,7 @@ Install Auto Trim for zMod 3.9.12 or newer as its README says: `auto_trim.cfg` i
 
 ### 2. Upload the folder
 
-Download the `beta` branch (Code > Download ZIP), unzip it, and rename the folder to `deep_calibration_development_beta`. Copy that whole folder into `mod_data` (Fluidd or Mainsail: Configuration > `mod_data`). When updating, replace the whole folder. Your recordings (`deep_calibration_data`) and saved soak calibrations are separate and are kept.
+Download the [beta branch ZIP](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod/archive/refs/heads/beta.zip), unzip it, and rename the extracted repository folder to `deep_calibration_development_beta`. Copy that whole folder into `mod_data` (Fluidd or Mainsail: Configuration > `mod_data`). When updating, replace the whole folder. Your recordings (`deep_calibration_data`) and saved soak calibrations are separate and are kept.
 
 ### 3. Include it
 
@@ -187,105 +189,56 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
 
-## Knee search: finding the offset automatically
+## Beta 10.1: flow-aware knee search and temporary fast polling
 
-Recordings show a clear pattern. Above a certain offset, the nozzle lays the line without pressing on it, and the load cell reads almost nothing. Below it, the force rises steeply. That point, the knee, is where the nozzle starts pressing the line into the bed. A good first layer sits just above it, by a small margin.
+Beta 10.1 is the official continuation of the existing Deep Calibration development beta and supersedes beta 9. It is the current working baseline, not a separate experimental fork. This version is published on the repository's `beta` branch; the stable `main` branch is separate. Keep official Auto Trim 3.9.13 separate; there is no bundled Auto Trim. Replace the complete Deep Calibration folder, rerun its existing installer, and restart while idle. Check DEEP_CALIBRATION_STATUS for 0.1.0-beta.10.1. If updating Python does not load the new version on your zMod setup, use a full printer reboot. Publishing this source does not install it on your printer.
 
-`DEEP_CALIBRATION_KNEE` finds the knee during the first layer, then sets the offset the margin above it. Auto Trim learns that offset when layer 3 starts, like a babystep.
+### Polling
 
-### How it searches
+During a recording (including a knee search) Deep Calibration recognizes the installed LOAD_CELL_POLL-patched native reader and temporarily sets its post-reading pause to zero. It does not install or modify that driver, send extra serial requests, or change WAIT. It restores the exact prior pause on stop, automatic end, shutdown/disconnect, sensor startup failure and writer failures. Unpatched readers continue normally. `poll_accelerate: False` opts out. Set your driver WAIT to its native 0.05 before recording if desired; the recorder preserves whatever WAIT you selected.
 
-1. It raises the nozzle 0.10 mm above the offset Auto Trim set (`START`), where the force reads near zero.
-2. It lowers the nozzle 0.01 mm at a time (`STEP`). Each step is measured once the change has reached the nozzle (see [Timing](#timing)), using only the readings taken while printing.
-3. When a step rises clearly above the steps before it, and the next step rises further, the knee is between them.
-4. It steps back up until the force is flat again, to measure the knee from the other side.
-5. It fits the knee through all the steps, and sets the offset the margin above it.
+Measured board-side throughput remains about9.8 Hz, not the console's theoretical33 Hz. `polling_accelerated` status and `poll_policy` events expose the policy. This uses the patched driver's poll_time attribute; changing the driver/patch API requires review. A native driver without that interface is left untouched.
 
-The console shows every step, for example:
-```
-DEEP CALIBRATION: knee search started at Z 0.110 (0.100 above Z 0.010), stepping down 0.010 mm; margin 0.025 (default)
-DEEP CALIBRATION: knee search Z -0.120: 1.4 g (recent level -5.7 g, rise needed 15.9 g, +/-1.8 g, 26 readings)
-DEEP CALIBRATION: knee going down at Z -0.1365; stepping back up to confirm it
-DEEP CALIBRATION: knee check going up Z -0.130: 2.1 g (flat)
-DEEP CALIBRATION: knee found at Z -0.1362 (down -0.1365, up -0.1358, repeatability 0.0007 mm): the nozzle starts pressing the line there. Offset set to Z -0.1112 (knee + 0.025, default); Auto Trim learns it when layer 3 starts.
-```
+### Margin policy and flow keys
 
-### How long each step takes (adaptive hold)
+There is no established universal knee-to-good margin. By default an unfamiliar flow recipe requires an explicit `MARGIN=` or a manually initialized learned entry. The legacy0.125 fallback still exists only for compatibility when `knee_require_margin: False`; it is not recommended as a validated default. A `knee_margin` config value alone does not bypass the new requirement.
 
-The load cell reports about 3 times a second, and each reading is noisy, so one step needs many readings. Each step lasts at least 6 seconds (`HOLD`). After that it ends as soon as its median force is known to within 2 g (`SE`), or at 20 seconds at most (`HOLD_MAX`). A quiet load cell gives short steps; a noisy one gets the time it needs. The console shows the precision of each step (`+/-1.8 g`).
+Keys include material, layer height, line width, print speed, filament diameter and nominal `HEIGHT * WIDTH * SPEED` flow in mm3/s (four decimal places). Equal-flow recipes with different dimensions/speeds have distinct entries. This is nominal metadata, not measured extrusion. Actual bead cross-section, temperature, nozzle, extrusion multiplier and path history can change force at the same nominal flow. Do not assume one entry transfers universally. Old height-only and beta10 flow-only entries stay in knee_margins.json but are not silently reused or converted. Accurate slicer recipe values are necessary; a metadata edit or speed/extrusion override change during a search aborts it and restores the original offset.
 
-### When a rise counts (threshold from the noise)
-
-A step is compared with the median of the three flat steps before it, never with a fixed value: the load cell drifts slowly (about 2 g per minute in recordings), and comparing neighbouring steps makes that irrelevant.
-
-How big the rise must be is measured, not guessed. From the first flat steps, the search measures how much the step results jump from one step to the next, using the differences between neighbouring steps (so slow drift does not count as noise). The rise must then be 4 times that noise (`NOISE_K`), and at least 6 g (`RISE_MIN`). Until four flat steps exist, it uses 12 g (`RISE`).
-
-Example from a real 0.2 mm first layer: the step results wandered by about 4 g, so the rise needed was about 16 g. A step that recovered from a dip (from -15.5 g back to -2.2 g, a jump of 13 g) is no longer mistaken for a rise.
-
-A step that passes is a candidate. It only counts if the next step rises further (by half the threshold); a single high step that does not continue is ignored.
-
-### Where the knee is (fitted, not stepped)
-
-The step that first passes the threshold is not the knee itself: the rise starts somewhere above it, between steps, and with a gentle rise or a noisy load cell, the threshold may only be passed a step or two later. So the search fits a line through all its steps: flat down to the knee, then rising steadily below it. The knee is where the two meet, found to 0.0005 mm, anywhere from half a step below the candidate to two and a half steps above it. Steps with a more precise median count more.
-
-On the real 0.2 mm recording, the old rule put the knee at -0.150 (the first step over the threshold); the fit puts it at -0.136, and gives the same answer whichever step the threshold was passed at.
-
-### Measured from both directions (confirmation)
-
-After finding the knee going down, the search steps back up 0.01 mm at a time until two steps in a row are flat again (at most 4 steps above the knee). It fits the knee again from that side, using the deepest step as the start of the way up. The difference between the two is the repeatability of this search, shown in the console. If it is more than two steps, the console says the result is less certain. The knee used is the fit through all the steps, down and up.
-
-On the real 0.08 mm recording, where the nozzle went down and back up by hand, the knee was -0.1380 going down and -0.1325 going up: a repeatability of 0.0055 mm. `CONFIRM=0` skips the way up.
-
-### The margin above the knee (learned)
-
-The knee is where pressing starts; how far above it a good first layer sits depends on the filament, the first-layer height and your taste. The search uses a margin per filament and first-layer height (for example `PLA 0.20`), and learns it from you:
-
-- After a search, look at the first layer. If it is right, do nothing: nothing is learned, the margin stays.
-- If it is not, babystep it during the same first layer. When layer 2 starts, the offset you kept, minus the knee, is what this print wanted. The margin moves halfway towards it (`knee_learn_rate`).
-
-```
-DEEP CALIBRATION: knee margin for PLA 0.20 learned: you kept Z -0.0912, 0.0450 above the knee; margin 0.0250 -> 0.0350
-```
-
-The next search for that filament and height uses the learned margin (the console says `learned from 2 prints`). The margins are kept in `knee_margins.json` beside the recordings.
-
-`DEEP_CALIBRATION_KNEE_MARGIN` shows them. To change one by hand, for example when layer 2 scraped and the first layer should be higher:
+For a one-off experiment with a margin you explicitly choose:
 ```gcode
-DEEP_CALIBRATION_KNEE_MARGIN MATERIAL=PLA HEIGHT=0.2 ADJUST=0.01
-DEEP_CALIBRATION_KNEE_MARGIN MATERIAL=PLA HEIGHT=0.2 MARGIN=0.03
-DEEP_CALIBRATION_KNEE_MARGIN MATERIAL=PLA HEIGHT=0.2 RESET=1
+DEEP_CALIBRATION_KNEE ARM=1 MARGIN=0.0075
 ```
-A `MARGIN=` on the knee search line is used for that search only, and nothing is learned from it.
+That number is the user's fast-recipe candidate, not a recommendation for arbitrary prints. Put the line after DEEP_CALIBRATION_ARM in the existing slicer startup, before layer1. Explicit MARGIN remains one-off and is not learned. Omit it only when a matching flow entry exists.
 
-### Safety
+To initialize a provisional flow entry that can subsequently learn from first-layer babysteps:
+```gcode
+DEEP_CALIBRATION_KNEE_MARGIN MATERIAL=PLA HEIGHT=0.2 WIDTH=0.5 SPEED=110 FILAMENT=1.75 FLOW=11 MARGIN=0.0075
+```
+Use your actual nominal flow and chosen margin. Use the same MATERIAL/HEIGHT/WIDTH/SPEED/FILAMENT parameters for ADJUST or RESET=1. FILAMENT defaults to1.75; optional FLOW must agree with HEIGHT*WIDTH*SPEED within0.1%. Flow-only and height-only editing are rejected. The listing command with no arguments remains available. Only user adjustments after a successful non-fixed search teach margins at first-layer completion, and invalid/negative or >0.3mm observed margins are rejected. The user's clean-0.075 fixed-offset confirmation is still pending; do not silently reset Auto Trim's calibration to that value.
 
-| If... | Then |
-|---|---|
-| A step is 80 g above the recent level (`MAX_FORCE`) | The search stops at once and sets the offset the margin above the knee found so far |
-| It has gone 0.35 mm down without a knee (`TRAVEL`) | It stops and puts the offset back where Auto Trim set it |
-| The first layer ends first | It stops and puts the offset back |
-| You run `DEEP_CALIBRATION_KNEE_ABORT` | It stops and puts the offset back |
+### Descending result and ascending diagnostic
 
-Its own steps are recorded as `knee_step` events and the result as `knee_result`, not as your too high or too close labels. Babysteps you make after the search are labelled normally.
+The descending fit determines the selected knee and target. Ascending data is fitted and reported separately with its disagreement, but has zero weight in the selected knee. A lower sample error does not justify treating pressure/path hysteresis as geometric repeatability. The existing CONFIRM option remains; CONFIRM=0 skips the ascending diagnostic. Default up steps discard6s after queue lead, then measure for at least12s. Maximum hold remains at least the chosen minimum. First-layer end, force/travel guards, abort and restoration remain.
 
-### Using it
+Down steps normally retain the6s minimum. With temporary polling active and at least8 samples/s actually accumulated over the step, the minimum can drop to2s; the sample-count and precision checks still apply. `knee_fast_hold` can be raised to6 to retain conservative timing. Do not interpret a changed sample value as proof of independence or claim a1.7x precision gain. Temperature drift, path variation and pressure history still need hardware evaluation.
 
-`DEEP_CALIBRATION_KNEE ARM=1` on the start G-code, after `DEEP_CALIBRATION_ARM`. It starts 3 seconds into the first layer. A search takes about 25 to 30 steps of 6 to 20 seconds, so the first layer needs to last several minutes: a large flat square works well. Search at the first-layer height you print: the knee moves a little with it (about -0.13 at 0.08 mm and -0.14 at 0.2 mm on the first printer tested).
+Recommend a controlled faster-flow first-layer pad within your hotend/material's validated capability, not an automatic generated pattern. Begin at higher nozzle clearance and approach downward over fresh lines. Avoid reusing over-squeezed areas. Confirm the selected fixed offset on a clean print and inspect layer2; a successful recipe does not prove all recipes share the same offset. No new tuning-pattern macro is added.
 
-| Option | Default | What it does |
+### Added settings
+
+| Setting | Default | Meaning |
 |---|---|---|
-| `START` | 0.10 | How far above Auto Trim's offset it starts (mm) |
-| `STEP` | 0.01 | Step size (mm) |
-| `HOLD` / `HOLD_MAX` | 6 / 20 | Shortest and longest step (s) |
-| `SE` | 2 | Precision a step aims for (g) |
-| `RISE` | 12 | Rise needed until the noise is known (g) |
-| `NOISE_K` / `RISE_MIN` | 4 / 6 | Rise needed: this many times the noise, and at least this (g) |
-| `MARGIN` | learned, or 0.025 | Offset set this far above the knee (mm); on the line, used once and not learned |
-| `CONFIRM` | 1 | Step back up to measure the knee from both sides |
-| `MAX_FORCE` | 80 | Rise that stops the search at once (g) |
-| `TRAVEL` | 0.35 | Furthest it goes below its start (mm) |
+| poll_accelerate | True | Temporarily remove patched driver's post-reading pause |
+| knee_require_margin | True | Require explicit or learned margin for an uncalibrated flow recipe |
+| knee_fast_hold | 2 | Minimum down measurement seconds only when observed rate>=8Hz |
+| knee_up_settle | 6 | Discard time after upward step/queue lead |
+| knee_up_hold | 12 | Minimum upward measurement seconds |
 
-During a first layer that is already recording, `DEEP_CALIBRATION_KNEE` without `ARM` starts it at once.
+### Verification and scope
+
+264 software tests plus28 subtests pass, including17 new policy tests. The extracted release is tested again. No printer execution, full Klipper batch run, driver installation or upstream driver submission was performed for this build. Native probe helper behavior is unchanged: this branch still forces1mm/s contact and does not include the optional0.1mm/s controls from the separate beta5.9 branch. Auto Trim's upper offset cap is also outside this package's scope.
+
 
 ## Guarded approach
 
@@ -397,13 +350,9 @@ Other tools:
 
 ## What the recordings have shown so far
 
-From one AD5X, PLA, first layers of 0.08 and 0.2 mm:
+The user's reported1mm/s probe readings are more repeatable than5/2.5mm/s. Poll trials measured about9.8Hz with a0.100s interval whether WAIT was0.05,0.02 or0; removing WAIT produced no throughput gain and noise remained about3g. The console rate is only an estimate.
 
-- **The knee can be measured to a fraction of a step.** Fitted through all the steps, the knee of a real 0.2 mm search came out at -0.136, whichever step the threshold was passed at; measured going down and back up on a 0.08 mm first layer, the two sides agreed to 0.0055 mm.
-- **The load cell sees the nozzle pressing.** The force stays near zero until the nozzle starts pressing the line, then rises steeply: about 100 g over 0.04 mm at a 0.08 mm first layer, about 22 g over 0.02 mm at 0.2 mm. Moving back up brings the force back down, so it is the height, not time.
-- **It cannot tell "right" from "too high".** Both read near zero. That is why the knee search looks for the start of the rise and backs off by a margin, instead of aiming for a force.
-- **The load cell drifts slowly,** about 2 g per minute at a fixed offset. Steps compared with each other are not affected; an absolute force target would be.
-- **A first layer that looks perfect can still be too close.** At -0.13 mm a 0.08 mm first layer looked smooth, but the next layer scraped.
+The latest faster-flow (~11mm3/s) first layer had a descending knee around-0.0825mm and a candidate good offset around-0.075mm. Earlier slower-flow knees near-0.135 did not establish a good offset: -0.125/-0.13 scraped, and -0.01 was unconfirmed and too high for the later fast trial. The earlier universal0.125mm-margin claim is withdrawn. Flow and path/pressure history are plausible influences, not a proven universal flow-only calibration law. Ascending force was higher at matching offsets; do not average that discrepancy into apparent precision. Clean fixed-offset and slower-recipe confirmation prints remain pending. Raw newer recordings were not re-analyzed in this build.
 
 ## Commands
 
@@ -413,7 +362,7 @@ From one AD5X, PLA, first layers of 0.08 and 0.2 mm:
 | `DEEP_CALIBRATION_DISARM` | Cancels `ARM` before the first layer starts |
 | `DEEP_CALIBRATION_KNEE` | Knee search; `ARM=1` waits for the first layer |
 | `DEEP_CALIBRATION_KNEE_ABORT` | Stops the knee search and puts the offset back |
-| `DEEP_CALIBRATION_KNEE_MARGIN` | Shows the learned knee margins; with `MATERIAL=` and `HEIGHT=`, `MARGIN=`, `ADJUST=` or `RESET=1` changes one |
+| `DEEP_CALIBRATION_KNEE_MARGIN` | Shows the learned knee margins; with `MATERIAL=` and `FLOW=`, `MARGIN=`, `ADJUST=` or `RESET=1` changes one |
 | `DEEP_CALIBRATION_MARK LABEL=<label>` | Labels the current offset by hand |
 | `DC_MARK_GOOD` | `MARK LABEL=GOOD` |
 | `DEEP_CALIBRATION_START` / `STOP` / `SET` / `ZERO` | Recording by hand (see [Recording by hand](#recording-by-hand)) |
@@ -439,7 +388,7 @@ In `[deep_calibration]` in `deep_calibration.cfg`:
 | `knee_se_g` | 2 | Precision a step aims for (g) |
 | `knee_rise_g` | 12 | Rise needed until the noise is known (g) |
 | `knee_noise_k` / `knee_rise_min_g` | 4 / 6 | Rise needed: this many times the measured noise, and at least this (g) |
-| `knee_margin` | 0.025 | Margin above the knee until one is learned (mm) |
+| `knee_margin` | 0.125 legacy | Only used with knee_require_margin=False; unvalidated fallback, not a universal calibration |
 | `knee_learn_rate` | 0.5 | How far each print moves the learned margin towards what you kept |
 | `knee_confirm` | True | Step back up to measure the knee from both sides |
 | `knee_max_force_g` | 80 | Rise that stops the search at once (g) |

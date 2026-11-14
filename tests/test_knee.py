@@ -23,6 +23,7 @@ class KneeTests(unittest.TestCase):
 
     def setUp(self):
         self.setUp_auto()
+        self.cell.knee_require_margin = False
         self.gm = self.objects['gcode_move'].status
         self.gm['homing_origin'][2] = 0.0
         self.knee_at = -0.125; self.slope = 2500.; self.drift = 0.; self.spike = None; self.jump = 0.
@@ -76,7 +77,7 @@ class KneeTests(unittest.TestCase):
         self.assertEqual(res['reason'], 'knee')
         self.assertAlmostEqual(res['knee_threshold'], -0.13)          # the old rule: first step over the threshold
         self.assertAlmostEqual(res['knee'], -0.125, places=3)         # the fit: where pressing really starts
-        self.assertAlmostEqual(self.gm['homing_origin'][2], res['knee'] + 0.025, places=4)
+        self.assertAlmostEqual(self.gm['homing_origin'][2], res['knee'] + 0.125, places=4)
         self.assertTrue(res['fitted'])
 
     def test_a_knee_between_two_steps_is_found_between_them(self):
@@ -147,7 +148,7 @@ class KneeTests(unittest.TestCase):
         self.run_print(400)
         res = self.result(self.events())
         self.assertEqual(res['reason'], 'force limit'); self.assertAlmostEqual(res['knee'], -0.13)
-        self.assertAlmostEqual(self.gm['homing_origin'][2], -0.105, places=4)
+        self.assertAlmostEqual(self.gm['homing_origin'][2], -0.13 + 0.125, places=4)
 
     def test_no_knee_within_travel_restores_the_offset(self):
         self.knee_at = -5.
@@ -206,10 +207,10 @@ class KneeTests(unittest.TestCase):
         self.run_print(400)
         self.assertIsNone(self.cell.knee)
         self.finish_layer_with(+0.02)        # the first layer looked too close: 0.02 up
-        m = self.margins()['pla_0.20']
+        m = self.margins()['pla_h0.2000_w0.4500_s40.0000_f1.7500_q3.6000']
         self.assertEqual(m['n'], 1)
-        self.assertAlmostEqual(m['last_observed'], 0.045, places=3)          # kept 0.045 above the knee
-        self.assertAlmostEqual(m['margin'], 0.025 + 0.5 * (0.045 - 0.025), places=3)
+        self.assertAlmostEqual(m['last_observed'], 0.145, places=3)          # kept 0.145 above the knee
+        self.assertAlmostEqual(m['margin'], 0.125 + 0.5 * (0.145 - 0.125), places=3)
 
     def test_no_babystep_after_the_search_learns_nothing(self):
         self.start_recording_and_knee()
@@ -218,7 +219,7 @@ class KneeTests(unittest.TestCase):
         self.assertEqual(self.margins(), {})
 
     def test_the_next_search_uses_the_learned_margin(self):
-        Path(self.cell.knee_margin_file).write_text(json.dumps({'pla_0.20': {'margin': 0.04, 'n': 3}}))
+        Path(self.cell.knee_margin_file).write_text(json.dumps({'pla_h0.2000_w0.4500_s40.0000_f1.7500_q3.6000': {'margin': 0.04, 'n': 3}}))
         self.start_recording_and_knee()
         self.run_print(400)
         res = self.result(self.events())
@@ -235,14 +236,14 @@ class KneeTests(unittest.TestCase):
     def test_margin_command_shows_sets_adjusts_and_resets(self):
         c = Command(); self.cell.cmd_KNEE_MARGIN(c)
         self.assertIn('no learned knee margins yet', c.messages[-1])
-        self.cell.cmd_KNEE_MARGIN(ArmCommand(MATERIAL='PETG', HEIGHT='0.2', MARGIN='0.03'))
-        self.assertAlmostEqual(self.margins()['petg_0.20']['margin'], 0.03)
-        self.cell.cmd_KNEE_MARGIN(ArmCommand(MATERIAL='PETG', HEIGHT='0.2', ADJUST='0.01'))
-        self.assertAlmostEqual(self.margins()['petg_0.20']['margin'], 0.04)
+        self.cell.cmd_KNEE_MARGIN(ArmCommand(MATERIAL='PETG', HEIGHT='0.2', WIDTH='0.45', SPEED='40', MARGIN='0.03'))
+        self.assertAlmostEqual(self.margins()['petg_h0.2000_w0.4500_s40.0000_f1.7500_q3.6000']['margin'], 0.03)
+        self.cell.cmd_KNEE_MARGIN(ArmCommand(MATERIAL='PETG', HEIGHT='0.2', WIDTH='0.45', SPEED='40', ADJUST='0.01'))
+        self.assertAlmostEqual(self.margins()['petg_h0.2000_w0.4500_s40.0000_f1.7500_q3.6000']['margin'], 0.04)
         c = Command(); self.cell.cmd_KNEE_MARGIN(c)
-        self.assertIn('PETG 0.20: 0.0400', c.messages[-1])
-        self.cell.cmd_KNEE_MARGIN(ArmCommand(MATERIAL='PETG', HEIGHT='0.2', RESET='1'))
-        self.assertNotIn('petg_0.20', self.margins())
+        self.assertIn('PETG H0.2000 W0.4500 S40.0000 F1.7500 Q3.6000: 0.0400', c.messages[-1])
+        self.cell.cmd_KNEE_MARGIN(ArmCommand(MATERIAL='PETG', HEIGHT='0.2', WIDTH='0.45', SPEED='40', RESET='1'))
+        self.assertNotIn('petg_h0.2000_w0.4500_s40.0000_f1.7500_q3.6000', self.margins())
 
 if __name__ == '__main__':
     unittest.main()

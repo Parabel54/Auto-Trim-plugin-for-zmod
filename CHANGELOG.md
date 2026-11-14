@@ -1,3 +1,15 @@
+# 0.1.0-beta.10.1 — current continuation (2026-11-14)
+
+Official continuation of the existing Deep Calibration beta, superseding beta 9. Beta 10 was an intermediate local checkpoint; beta 10.1 is the current working baseline. Published as the continuation on the GitHub `beta` branch.
+
+- Temporarily use zero post-reading pause during captures when the patched native driver supports it; preserve WAIT and restore the previous pause on exit/failure.
+- Key learned margins by material, layer height, line width, print speed, filament diameter and nominal volumetric flow. Equal-flow recipes with different dimensions stay separate. Legacy entries remain saved but are not reused automatically.
+- Require explicit or learned margins for new recipes by default; withdraw the universal 0.125 mm claim.
+- Select the descending knee fit; retain ascending fit and hysteresis as diagnostics with longer upward settling/holds.
+- Permit shorter downward holds only with sufficient observed sample rate and precision. Reject invalid margins and recipe/override changes during search.
+- Retain recorder, labels, continuous acquisition, relabel analysis, guarded probing and soak tools. No bundled Auto Trim or new tuning pattern.
+- 264 software tests plus 28 subtests passed, including the extracted runtime package. Hardware validation remains pending. Publication also updates the mesh status and start-config version labels; probe behavior is unchanged.
+
 # 0.1.0-beta.8
 
 - Knee search, more precise:
