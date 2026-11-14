@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.2.1 (2026-11-14). **Current official development continuation of beta 9.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
+Version 0.1.0-beta.10.2.2 (2026-11-14). **Current official development continuation of beta 9.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
 
 ## Contents
 
@@ -188,6 +188,49 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 **By hand:** `DEEP_CALIBRATION_MARK LABEL=<label> NOTE="..."` during a recording. Labels: `GOOD`, `TOO_HIGH`, `TOO_LOW`, `TRAVEL`, `TRANSITION` and `UNLABELLED`. `DC_MARK_GOOD` is a shortcut for `GOOD`, handy as a screen button. A label you set by hand after the last babystep is kept: the automatic `GOOD` at layer 2 does not replace it.
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
+
+## Beta 10.2.2: repeated validation and filament-profile scan
+
+Current continuation: **0.1.0-beta.10.2.2**. Orca start G-code stays unchanged. Replace the full folder, rerun the installer and restart while idle. There are still five runtime modules.
+
+Repeated source validation found that a long/split move can be processed while its G1 handler is still paused in native queue backpressure. Registering its end timing only after that handler returns is too late. Timing callbacks now attach to native lookahead moves at insertion, before processing/pausing. Split moves get separate clock intervals, with the same verified parent command. Native return values/errors are preserved; annotation failure blocks fitting. Unsupported queue APIs remain unsupported rather than guessed. Tests use the unmodified supplied native planner/movement methods with in-memory I/O sinks; hardware validation is pending.
+
+### Scan the filament used by the selected print
+
+Run in Fluidd/Mainsail:
+
+```gcode
+DEEP_CALIBRATION_FILAMENT
+DEEP_CALIBRATION_FILAMENT SHOW=HIDDEN
+DEEP_CALIBRATION_FILAMENT SHOW=ALL
+```
+
+These are read-only console commands. They do not heat, home, tare, change offsets or apply a filament preset. The first gives a summary; HIDDEN lists potentially mode/dependency-hidden settings; ALL lists the complete catalog. If scanning is needed, a background scan starts and its result appears automatically. The scanner reads the selected virtual-SD/current recording file, or retains the last verified snapshot after a print; selecting a new file changes the source. The report includes the source path/hash, exported filament preset identity and a separately labelled live-printer-now snapshot of PA, targets, fans and overrides. An uploaded file that has not been selected is not silently treated as the current print.
+
+All exported config values are still archived automatically when recording; the scan commands are optional and add nothing to slicer startup. They inspect file metadata, not Orca's currently open editor on another computer. No Orca MCP connection is required by the printer plugin.
+
+### Full filament option inventory, including hidden controls
+
+The pinned OrcaSlicer 2.5.0-dev 606b50f1 filament inventory has **152 options**. It includes the explicit filament preset key list, filament-page bindings, dynamic override controls and the developer key set. No mode or feature-condition filtering is applied. Modes/dependencies overlap: 83 advanced, 1 expert, 18 developer; 45 have dependency controls and 31 lack an explicit binding in the scanned filament builders. The potentially hidden union is 130. Lack of an explicit binding is not proof that a generic dialog cannot expose a key. Actual visibility depends on your printer, selected variant and enabled features.
+
+- [All 152 filament options](reference/orca_606b50f1/ALL_FILAMENT_OPTIONS.md)
+- [Potentially hidden/mode/dependency options](reference/orca_606b50f1/HIDDEN_FILAMENT_OPTIONS.md)
+- [Machine-readable registry](reference/orca_606b50f1/filament_registry_606b50f1.json)
+
+The availability inventory is not your actual preset values. Missing fields remain unknown. Disabled/nil overrides remain explicit; they are not replaced with inherited/default values. Unverified active-filament and variant mappings keep the raw arrays and say unresolved. Exported file values are not proof that the firmware currently applies them.
+
+### Scan an exported preset, including its supplied parents
+
+On a computer, from this folder:
+
+```sh
+python scan_filament_profile.py print.gcode --output filament-scan.json
+python scan_filament_profile.py MyPLA.json --parent GenericPLA.json --parent BasePLA.json --output filament-scan.json
+```
+
+Use one command appropriate to your input and a fresh output filename. The tool writes JSON plus a Markdown report, preserves each value's origin and reports missing parents. It never imports catalog defaults. Multiple variant values remain unresolved rather than choosing one arbitrarily. Custom additional filament metadata is retained. Preset JSON/parent exports or a project are needed to recover values deliberately omitted from G-code; the plugin cannot read your laptop's Orca editor remotely.
+
+Validation: **329 tests +37 subtests pass** in source; extracted-package results are recorded separately. See `BETA10_2_2_VALIDATION.md`. Existing recording, labels, continuous sensors, 1 mm/s guarded contact, soak tools and Auto Trim integration remain. Physical validation is pending.
 
 ## Beta 10.2.1: reviewed corrections
 

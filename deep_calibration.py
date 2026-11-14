@@ -22,7 +22,7 @@ except ImportError:
     from deep_calibration_mesh import DeepCalibrationMesh
     from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.2.1'
+VERSION = '0.1.0-beta.10.2.2'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -228,13 +228,14 @@ class DeepCalibration:
         self.sensors = SensorExtension(self, config)
         self.mesh = DeepCalibrationMesh(config)
         self.slicer = GcodeContext(self, config)
+        self.filament_reports_pending = set()
         self.printer.register_event_handler('klippy:connect', self._connect)
         self.printer.register_event_handler('klippy:ready', self._install_adjustment_observer)
         self.printer.register_event_handler('klippy:ready', self.slicer.install)
         self.printer.register_event_handler('klippy:shutdown', self._shutdown)
         self.printer.register_event_handler('klippy:disconnect', self._disconnect)
         self.timer = self.reactor.register_timer(self._tick)
-        for name in ('START','STOP','STATUS','MARK','SET','ZERO','ARM','DISARM','KNEE','KNEE_ABORT','KNEE_MARGIN'):
+        for name in ('START','STOP','STATUS','MARK','SET','ZERO','ARM','DISARM','KNEE','KNEE_ABORT','KNEE_MARGIN','FILAMENT'):
             self.gcode.register_command('DEEP_CALIBRATION_'+name, getattr(self, 'cmd_'+name))
 
     def _install_adjustment_observer(self):
@@ -1410,6 +1411,37 @@ class DeepCalibration:
                                           part_fan=context.get('part_fan'),fans=context.get('fans'),
                                           probe_reference=context.get('configured_probe_offset')),
                     automatic_corrections=False)
+
+    cmd_FILAMENT_help = 'Read-only current-file filament scan: SHOW=SUMMARY, HIDDEN or ALL'
+    def cmd_FILAMENT(self, gcmd):
+        show=str(gcmd.get('SHOW','SUMMARY')).upper()
+        if show not in ('SUMMARY','HIDDEN','ALL'):raise gcmd.error('SHOW is SUMMARY, HIDDEN or ALL')
+        try:selected=self.slicer._path()
+        except Exception:selected=None
+        if self.slicer.snapshot is None or self.active or self.armed is not None or selected is not None:
+            self.slicer.request()
+        self.slicer.poll()
+        report=(self.slicer.snapshot or {}).get('filament_profile')
+        if report is None:
+            if self.slicer.state == 'loading':
+                self.filament_reports_pending.add(show)
+                gcmd.respond_info('DEEP CALIBRATION: filament scan started; the result will appear automatically')
+                return
+            gcmd.respond_info('DEEP CALIBRATION: filament scan '+self.slicer.state+'; select/arm an uploaded G-code file or use scan_filament_profile.py with an exported preset')
+            return
+        self._filament_report(show,gcmd.respond_info)
+
+    def _filament_report(self, show, respond):
+        report=(self.slicer.snapshot or {}).get('filament_profile')
+        if report is None:
+            respond('DEEP CALIBRATION: filament scan '+self.slicer.state+': '+str(self.slicer.error or 'no exported filament settings'))
+            return
+        output={k:v for k,v in report.items() if k!='settings'}
+        output['source_file']=self.slicer.path
+        output['gcode_sha256']=self.slicer.snapshot['file_sha256']
+        output['live_printer_now']=dict(t=self.reactor.monotonic(),**self.slicer.conditions(self._context_conditions()))
+        if show!='SUMMARY':output['settings']=[r for r in report['settings'] if show=='ALL' or r['hidden_categories']]
+        respond('DEEP CALIBRATION FILAMENT: '+json.dumps(safe(output),allow_nan=False))
 
     def cmd_STATUS(self, gcmd):
         gcmd.respond_info('DEEP CALIBRATION: '+json.dumps(safe(self.get_status(self.reactor.monotonic())),allow_nan=False))

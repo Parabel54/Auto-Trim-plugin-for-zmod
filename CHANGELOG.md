@@ -1,3 +1,11 @@
+# 0.1.0-beta.10.2.2 — queue-pause validation and filament scan (2026-11-14)
+
+- Attach timing to native lookahead moves before processing/backpressure pauses, including separate intervals for split moves. Preserve native behavior and fail fit attribution on annotation errors.
+- Add the complete pinned 152-option filament preset/UI/developer inventory with all visibility modes and conditional/backend entries.
+- Automatically archive filament-profile scan metadata alongside exported settings. Add read-only DEEP_CALIBRATION_FILAMENT SHOW=SUMMARY/HIDDEN/ALL, including automatic background completion and separate live printer conditions.
+- Add the offline preset/G-code scanner with supplied-parent resolution, explicit nil preservation, raw variants and missing-value reporting. No catalog defaults are applied.
+- Keep Orca startup unchanged. 329 software tests +37 subtests pass, including unmodified native planner/movement methods. Physical validation pending.
+
 # 0.1.0-beta.10.2.1 — independent review fixes (2026-11-14)
 
 - Verify native pre/post coordinate and extrusion modes, positions/delta and feed before attributing an indexed move; preserve original behavior/errors.

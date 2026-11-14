@@ -68,6 +68,68 @@ def setting_values(settings, key):
     return re.split('[,;]', value) if key in NUMERIC_VECTORS else value.split(';')
 
 
+def serialized_strings(value):
+    """Orca ConfigOptionStrings: semicolon delimiter, quoted/escaped values."""
+    values, current, quoted, escape = [], [], False, False
+    for char in value:
+        if escape:
+            current.append({'n':'\n','r':'\r','t':'\t'}.get(char,char)); escape=False
+        elif char == '\\': escape=True
+        elif char == '"': quoted=not quoted
+        elif char == ';' and not quoted:
+            values.append(''.join(current));current=[]
+        else: current.append(char)
+    if escape or quoted: raise ValueError('incomplete serialized string vector')
+    values.append(''.join(current))
+    return values
+
+
+def filament_profile_scan(settings, registry, used=None, scope='gcode', origins=None, unresolved=None):
+    """Inventory actual exported/preset values; never supply definition defaults."""
+    def vector(key, value, kind):
+        if isinstance(value,list):return value
+        if not isinstance(value,str):return [value]
+        if kind == 'coString':return [value]
+        if kind == 'coStrings':return serialized_strings(value)
+        return re.split('[,;]',value)
+    types=serialized_strings(settings.get('filament_type','')) if scope=='gcode' else settings.get('filament_type',[])
+    if not isinstance(types,list):types=[types]
+    index = (used[0] if used and len(used)==1 else 0 if scope=='preset' or len(types)==1 else None)
+    profile=settings.get('filament_settings_id',settings.get('name'))
+    if isinstance(profile,str) and scope=='gcode':profile=serialized_strings(profile)
+    if scope=='gcode' and not used and isinstance(profile,list) and len(profile)>1:
+        index=None
+    if isinstance(profile,list):profile=profile[index] if index is not None and index<len(profile) else profile
+    rows=[]
+    for definition in registry['settings']:
+        key=definition['key'];row={k:v for k,v in definition.items() if k!='definition_default_reference'}
+        row.update(raw=settings.get(key),selected_value=None,origin=(origins or {}).get(key,scope) if key in settings else 'unknown_not_supplied',status='missing_unknown')
+        if key in settings:
+            value=settings[key]
+            try:
+                values=vector(key,value,definition['type'])
+                if len(values)==1:
+                    row.update(selected_value=values[0],status='present')
+                elif definition['variant_scoped']:
+                    row['status']='present_variant_mapping_unknown'
+                elif index is not None and index<len(values):
+                    row.update(selected_value=values[index],status='present')
+                else:row['status']='present_active_filament_unknown'
+                if row['selected_value'] is None or row['selected_value']=='nil':
+                    if value is None or row['status']=='present':
+                        row['status']='explicit_nil_override' if definition['nullable'] else 'present_null_unknown'
+            except (ValueError,TypeError):row['status']='present_serialization_unresolved'
+        rows.append(row)
+    known={r['key'] for r in rows}
+    extras={k:v for k,v in settings.items() if k.startswith('filament_') and k not in known}
+    return dict(schema=1,slicer_commit=registry['commit'],scope=scope,profile=profile,used_filament_index=index,
+                counts=dict(catalog=len(rows),present=sum(r['status']!='missing_unknown' for r in rows),
+                            missing=sum(r['status']=='missing_unknown' for r in rows),
+                            hidden_or_conditional=sum(bool(r['hidden_categories']) for r in rows)),
+                unresolved_parents=unresolved or [],settings=rows,additional_filament_metadata=extras,
+                note='Raw and selected values are exported/preset metadata, not proof of active firmware settings; missing and variant mappings are not defaulted.')
+
+
 def project_physics(parts):
     def clean(value):
         if isinstance(value, dict):
@@ -303,7 +365,7 @@ def parse_file(path, cancel=None):
                         missing_keys=sorted(expected.difference(settings)))
     except (OSError, ValueError, KeyError):
         pass  # Coverage catalog is documentation, never a source of defaults.
-    return dict(schema=1, file_sha256=hasher.hexdigest(), bytes=offset, slicer=slicer,
+    result = dict(schema=1, file_sha256=hasher.hexdigest(), bytes=offset, slicer=slicer,
                 settings=settings, settings_sha256=digest(settings),
                 setting_variants={k:v for k,v in variants.items() if len(v)>1},
                 emitted_plate_coordinates=plate_values,
@@ -315,6 +377,13 @@ def parse_file(path, cancel=None):
                 project_snapshot=sidecar, sidecar_stat=sidecar_stat,
                 process_coverage=coverage,
                 scope='emitted_global_config_plus_emitted_segments; unexported object/modifier settings unknown')
+    try:
+        path=os.path.join(os.path.dirname(os.path.realpath(__file__)),'reference','orca_606b50f1','filament_registry_606b50f1.json')
+        with open(path) as stream:filament_registry=json.load(stream)
+        result['filament_profile']=filament_profile_scan(settings,filament_registry,used_filaments)
+    except (OSError,ValueError,KeyError,TypeError):
+        result['filament_profile']=None
+    return result
 
 
 def public_snapshot(snapshot):
@@ -349,6 +418,9 @@ class GcodeContext:
         self.generation = 0
         self.flow_reference = None
         self.pressure_until = 0.
+        self.inflight = []
+        self.queue_hook = None
+        self.original_add_move = None
 
     def install(self):
         if not self.enabled or self.handlers: return
@@ -356,6 +428,36 @@ class GcodeContext:
         if not callable(getattr(toolhead, 'register_lookahead_callback', None)):
             self.state, self.error = 'unsupported', 'native lookahead callbacks unavailable'
             return
+        lookahead = getattr(toolhead, 'lookahead', None)
+        original_add = getattr(lookahead, 'add_move', None)
+        if not callable(original_add):
+            self.state, self.error = 'unsupported', 'native lookahead add_move unavailable'
+            return
+        self.original_add_move = original_add
+        def add_move(move):
+            result = original_add(move)
+            # Native Toolhead.move can yield after flushing this move. Attach
+            # timing before that flush, not after the G1 handler returns.
+            if self.inflight:
+                parent = self.inflight[-1]
+                try:
+                    native = self.owner._status('gcode_move', self.owner.reactor.monotonic())
+                    valid = self.validate_after(parent, native)
+                    child = dict(segment=parent['segment'], conditions=parent['conditions'],
+                                 source_valid=valid, parent=parent, start=None, end=None)
+                    self.timeline.append(child)
+                    def timed(end, child=child, move=move):
+                        duration = move.accel_t + move.cruise_t + move.decel_t
+                        if finite(end) and finite(duration) and duration >= 0:
+                            child.update(start=end-duration, end=end)
+                        else:
+                            child['source_valid'] = False
+                    move.timing_callbacks.append(timed)
+                except Exception:
+                    parent['source_valid'] = False
+                    self.state, self.error = 'unsupported', 'native queue annotation failed'
+            return result
+        lookahead.add_move = self.queue_hook = add_move
         for name in ('G0', 'G1', 'G2', 'G3'):
             original = self.owner.gcode.register_command(name, None)
             if original is None: continue
@@ -452,6 +554,11 @@ class GcodeContext:
             self.owner._event('slicer_snapshot', **public_snapshot(self.snapshot))
             self.emitted_hash = self.snapshot['file_sha256']
 
+        requested=getattr(self.owner,'filament_reports_pending',set())
+        if requested and self.state != 'loading':
+            for show in sorted(requested):self.owner._filament_report(show,self.owner.gcode.respond_info)
+            requested.clear()
+
     def reset_gate(self):
         self.last_gate = self.steady_since = self.last_velocity = None
         self.last_stamp = self.last_segment = self.last_identity = None
@@ -479,33 +586,40 @@ class GcodeContext:
                                   native_before=native_before.get('gcode_position'),
                                   command_parameters=dict(params))
                     record['conditions'] = self.conditions(self.owner._context_conditions())
-                    self.timeline.append(record)
-                    toolhead = self.owner.printer.lookup_object('toolhead')
-                    toolhead.register_lookahead_callback(lambda t, record=record: record.update(start=t))
+                    if self.queue_hook is None:
+                        self.timeline.append(record)
+                        self.owner.printer.lookup_object('toolhead').register_lookahead_callback(
+                            lambda t, record=record: record.update(start=t))
         except Exception:
             record = None
             self.state, self.error = 'unsupported', 'motion annotation failed'
+        if record is not None: self.inflight.append(record)
         try:
             result = original(gcmd)
         except Exception:
             if record is not None: record['source_valid'] = False
             raise
+        finally:
+            if record is not None: self.inflight.pop()
         if record is not None:
             try:
                 native_after = self.owner._status('gcode_move', self.owner.reactor.monotonic())
-                record['native_after'] = native_after.get('gcode_position')
-                record['source_valid'] = bool(record['source_valid'] and
-                    self.modal_matches(record['segment'], native_after, after=True))
-                before, after = record['native_before'], record['native_after']
-                if (not before or not after or len(before) < 4 or len(after) < 4
-                        or not finite(record['segment']['delta_e'])
-                        or abs((after[3] - before[3]) - record['segment']['delta_e']) > 1.e-5):
-                    record['source_valid'] = False
-                self.owner.printer.lookup_object('toolhead').register_lookahead_callback(
-                    lambda t, record=record: record.update(end=t))
+                record['source_valid'] = self.validate_after(record, native_after)
+                if self.queue_hook is None:
+                    self.owner.printer.lookup_object('toolhead').register_lookahead_callback(
+                        lambda t, record=record: record.update(end=t))
             except Exception:
                 record['source_valid'] = False
         return result
+
+    def validate_after(self, record, native):
+        before, after = record['native_before'], native.get('gcode_position')
+        record['native_after'] = after
+        segment = record['segment']
+        return bool(record['source_valid'] and self.modal_matches(segment, native, after=True)
+                    and before and after and len(before)>=4 and len(after)>=4
+                    and finite(segment['delta_e'])
+                    and abs(after[3]-before[3]-segment['delta_e']) <= 1.e-5)
 
     @staticmethod
     def modal_matches(segment, native, after=False):
@@ -533,7 +647,8 @@ class GcodeContext:
         return dict(enabled=self.enabled, state=self.state, error=self.error,
                     file_sha256=s.get('file_sha256'), physics_sha256=s.get('physics_sha256'),
                     setting_count=len(s.get('settings', {})), indexed_commands=len(s.get('segments', {})),
-                    issues=s.get('issues', []), timing_observer_installed=bool(self.handlers))
+                    issues=s.get('issues', []), timing_observer_installed=bool(self.handlers),
+                    timing_before_native_pause=self.queue_hook is not None)
 
     @staticmethod
     def conditions(context):
@@ -560,7 +675,9 @@ class GcodeContext:
             matches = [r for r in self.timeline if finite(r['start']) and finite(r['end'])
                        and r['start'] <= clock < r['end']]
             if len(matches) != 1: reasons.append('missing_or_ambiguous_queue_segment')
-            elif not matches[0]['source_valid']: reasons.append('unindexed_or_macro_motion')
+            elif (not matches[0]['source_valid'] or
+                  not matches[0].get('parent', {}).get('source_valid', True)):
+                reasons.append('unindexed_or_macro_motion')
             else:
                 record = matches[0]
                 segment = record['segment']

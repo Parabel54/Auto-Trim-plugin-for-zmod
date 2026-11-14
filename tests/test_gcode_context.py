@@ -259,6 +259,7 @@ class GateTests(unittest.TestCase):
         self.f.objects['toolhead'].register_lookahead_callback = lambda cb: cb(1.)
         native = mock.Mock(return_value='original')
         register('G1', native); register('G0', native)
+        self.f.objects['toolhead'].lookahead = SimpleNamespace(add_move=lambda move:None)
         self.source.install(); self.source.install()
         self.assertEqual(self.f.gcode.commands['G1'](ArmCommand()), 'original')
         self.assertEqual(self.f.gcode.commands['G0'](ArmCommand()), 'original')
