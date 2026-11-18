@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.2.2 (2026-11-14). **Current official development continuation of beta 9.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
+Version 0.1.0-beta.10.2.3 (2026-11-18). **Current official development continuation of beta 9.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
 
 ## Contents
 
@@ -189,6 +189,38 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
 
+## Beta 10.2.3: vibration gate and accelerometer overflows
+
+Current continuation: **0.1.0-beta.10.2.3**. Orca start G-code stays unchanged. Replace the full folder, rerun the installer and reboot while idle (a reboot loads changed Python; `RESTART` does not).
+
+### First-layer recordings no longer stop on one accelerometer overflow
+
+On the AD5X, 10.2.2 recordings stopped about a second into the first layer with `native acceleration errors/overflows: 0/1`: the accelerometer chip's buffer overflowed once, and any overflow ended the recording. Now:
+
+- A single overflow is recorded as an `accel_overflow` event, and the batch keeps its overflow mark in the acceleration file, so the analyser treats that stretch as gapped, as it already does for gaps. The load cell and everything else keep recording.
+- More than 3 overflows within 60 seconds (`accel_overflow_limit`) still stop the recording: by then the data is unreliable.
+- An accelerometer data error (not an overflow) still stops it at once.
+
+The overflow happened where 10.2.2 starts the recording, the accelerometer and fast load cell polling at the same moment, at the start of a print. If overflows keep appearing there, `poll_accelerate: False` shows whether fast polling at print start is the trigger.
+
+### Vibration gate: clean probe touches on a shaking table
+
+The load cell feels the touch, so shaking from outside, such as another printer running on the same table, moves the moment it triggers. On one AD5X with an AD5M printing next to it, that scatter was what kept every strict soak calibration from passing.
+
+The toolhead accelerometer measures exactly that shaking. Around every probe touch (meshes, KAMP, `PROBE`, soak rounds, homing with the probe):
+
+1. **Before the touch,** with the nozzle still after any fast approach, the shaking is measured for 0.3 s (`vibration_window`). Above 150 mm/s² (`vibration_limit`) the touch waits until it settles, up to 10 s (`vibration_max_wait`).
+2. **During the touch,** the shaking is measured again. If the touch itself was shaken, its result is discarded, the nozzle goes back up, and the touch is made again, up to 2 times (`vibration_retries`). Homing touches wait but are never redone: Klipper re-zeroes Z on each homing touch.
+3. **If it is still shaken after that,** the last touch is kept and marked as disturbed, so a mesh is not failed halfway.
+
+Shaking is the RMS of each axis' deviation from its own mean, combined, in mm/s²: gravity and the board's tilt drop out. A quiet AD5X reads about 60–85 (the idle checks), so 150 is about twice the quiet level; raise it if touches wait on a printer that is simply noisier.
+
+Every touch is recorded: position, shaking before and during, the wait, the attempt, and whether it was redone or disturbed. `DC_APPROACH_STATUS` shows the counts and the last touch; during a recording, each touch is also a `probe_touch` event. The console says when a touch waits, is redone, or is kept while shaken.
+
+One listener on the accelerometer serves all touches, so a 9 x 9 mesh does not restart the chip 81 times; it is released 5 seconds after the last touch, and attached again if Klipper dropped it. Without the accelerometer (`vibration_gate: False`, or a printer without one) touches are made as before.
+
+Software tests: 343 pass (10.2.2's 329, the old overflow test replaced by three, and 11 for the gate) with 37 subtests. Physical validation pending: the default limit is a starting point.
+
 ## Beta 10.2.2: repeated validation and filament-profile scan
 
 Current continuation: **0.1.0-beta.10.2.2**. Orca start G-code stays unchanged. Replace the full folder, rerun the installer and restart while idle. There are still five runtime modules.
@@ -339,7 +371,9 @@ To keep probing fast anyway, the guarded approach moves down quickly first: when
 
 While it is installed, every touch is 1 mm/s whatever Auto Trim's `probe_speed` says. Homing to the stock Z endstop is not affected.
 
-`DC_APPROACH_STATUS` shows its state; `DC_APPROACH_RESET` forgets the recent touches, so the next probe is slow all the way.
+`DC_APPROACH_STATUS` shows its state, including the vibration gate's counts and the last touch; `DC_APPROACH_RESET` forgets the recent touches, so the next probe is slow all the way. Run it after turning a bed levelling knob: the bed is then no longer where the last touch found it.
+
+Since 10.2.3 the approach also waits out, or redoes, touches shaken from outside: see [Vibration gate](#vibration-gate-clean-probe-touches-on-a-shaking-table).
 
 **After a zMod update:** the approach hooks into Klipper's probe code. If an update changes that code, Klipper refuses to start and names `deep_calibration_approach` (`requires the reviewed Klipper 13 native probe`). Remove the `[deep_calibration_approach]` section from `deep_calibration.cfg` and restart; everything else keeps working at Auto Trim's probe speed until the package is updated.
 
@@ -411,7 +445,7 @@ Commands are applied in the order they are read, so a babystep made after layer 
 
 ## Sensor problems during a recording
 
-The load cell and the accelerometer are the measurements: if either fails, or the load cell is silent for 1.5 seconds or the accelerometer for 2 seconds, the recording stops, because the data would be incomplete.
+The load cell and the accelerometer are the measurements: if either fails, or the load cell is silent for 1.5 seconds or the accelerometer for 2 seconds, the recording stops, because the data would be incomplete. An accelerometer buffer overflow is the exception: a single one is recorded as an `accel_overflow` gap and recording continues; more than 3 within 60 seconds (`accel_overflow_limit`) stop it.
 
 The temperature channels are context. A late report is recorded as an `adc_gap` event and recording continues; an irregular report is skipped and recorded (`adc_report_skipped`); a channel silent for 2 seconds is recorded as `adc_channel_lost`, and `adc_channel_resumed` when it reports again. A failure to write the recording file still stops it.
 
@@ -493,7 +527,7 @@ In `[deep_calibration]` in `deep_calibration.cfg`:
 | `max_file_mb`, `accel_rotate_mb`, `accel_max_mb`, `storage_reserve_mb` | 256, 32, 512, 64 | Storage limits |
 | `startup_integration` | False | Deep Calibration's own print start. Leave it off: Auto Trim prepares prints |
 
-In `[deep_calibration_approach]`: `approach_speed` (5 mm/s), `slow_clearance` (1 mm), `reference_max_age` (300 s).
+In `[deep_calibration_approach]`: `approach_speed` (5 mm/s), `slow_clearance` (1 mm), `reference_max_age` (300 s), and the vibration gate: `vibration_gate` (True), `vibration_limit` (150 mm/s²), `vibration_window` (0.3 s), `vibration_max_wait` (10 s), `vibration_retries` (2), `accelerometer` (lis2dw). In `[deep_calibration]`: `accel_overflow_limit` (3 within 60 s).
 
 ## Limits
 

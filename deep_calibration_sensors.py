@@ -141,6 +141,10 @@ class SensorExtension:
     def __init__(self, owner, config):
         self.owner=owner;self.printer=owner.printer;self.reactor=owner.reactor
         self.accel_name=config.get('accelerometer','lis2dw')
+        # A single accelerometer FIFO overflow is recorded as a gap; only
+        # repeated overflows (more than this many within 60 s) stop capture.
+        self.overflow_limit=config.getint('accel_overflow_limit',3,minval=0,maxval=100)
+        self.overflow_times=[];self.overflows_total=0
         self.adc_format=config.get('adc_callback_format','batch')
         if self.adc_format not in ('batch','scalar'):
             raise config.error('deep_calibration: adc_callback_format must be batch or scalar')
@@ -183,6 +187,7 @@ class SensorExtension:
         self.adc_anomalies={};self.adc_lost=set()
         self.writer=None;self.batches_received=self.frames_received=0;self.last_batch_time=None
         self.callback_max_seconds=0.
+        self.overflow_times=[];self.overflows_total=0
         if self.accel_enabled:
             chip=self.printer.lookup_object(self.accel_name,None)
             self.helper=getattr(chip,'batch_bulk',None)
@@ -206,7 +211,8 @@ class SensorExtension:
                     adc_callback_format=self.adc_format,accelerometer=self.accel_name,
                     acquisition='continuous_until_session_end_no_windows',
                     acceleration_format='mapped_scaled_float64_mm_s2',
-                    acceleration_max_bytes=self.max_bytes,acceleration_rotate_bytes=self.rotate_bytes)
+                    acceleration_max_bytes=self.max_bytes,acceleration_rotate_bytes=self.rotate_bytes,
+                    accel_overflow_limit=self.overflow_limit)
 
     def start(self,prefix):
         self.begin=self.reactor.monotonic()
@@ -232,9 +238,21 @@ class SensorExtension:
             if not self.owner.active or not self.accel_enabled:return False
             rows=message.get('data',())
             errors=message.get('errors',0);overflows=message.get('overflows',0)
-            if errors or overflows:
+            if errors:
                 self.error='native acceleration errors/overflows: %s/%s'%(errors,overflows)
                 return False
+            if overflows:
+                # Samples were lost: the batch header records it, so the
+                # analyser treats this stretch as gapped. Capture continues
+                # unless overflows repeat.
+                now=self.reactor.monotonic()
+                self.overflows_total+=int(overflows)
+                self.overflow_times=[t for t in self.overflow_times if now-t<=60.]+[now]
+                self.owner._event('accel_overflow',overflows=int(overflows),total=self.overflows_total,
+                                  in_last_60s=len(self.overflow_times),limit=self.overflow_limit)
+                if len(self.overflow_times)>self.overflow_limit:
+                    self.error='native acceleration overflows repeated: %d within 60 s'%len(self.overflow_times)
+                    return False
             if rows:
                 if not self.writer.put(rows,self.reactor.monotonic(),errors,overflows):
                     self.error=self.writer.error or 'acceleration writer stopped';return False
@@ -346,6 +364,7 @@ class SensorExtension:
                     adc_callback_format=self.adc_format,adc_attached=self.adc_attached,
                     adc_report_timestamps=dict(self.adc_last),attached=self.attached,error=self.error,
                     adc_anomalies=dict(self.adc_anomalies),adc_lost=sorted(self.adc_lost),
+                    accel_overflows=self.overflows_total,
                     batches_received=self.batches_received,frames_received=self.frames_received,
                     callback_max_seconds=self.callback_max_seconds,
                     last_batch_host_time=self.last_batch_time,

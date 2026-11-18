@@ -1,3 +1,9 @@
+# 0.1.0-beta.10.2.3 — vibration gate and accelerometer overflows (2026-11-18)
+
+- A single accelerometer FIFO overflow no longer stops a recording: it is recorded as an `accel_overflow` event and the batch keeps its overflow mark (the analyser treats it as a gap). More than `accel_overflow_limit` (3) overflows within 60 s, or any data error, still stop it. On the AD5X, 10.2.2 first-layer recordings stopped about a second in on one overflow.
+- Vibration gate in the guarded approach: before every probe touch the accelerometer measures external shaking for `vibration_window` (0.3 s); above `vibration_limit` (150 mm/s2) the touch waits up to `vibration_max_wait` (10 s). Shaking during the touch discards that native result and redoes the touch, up to `vibration_retries` (2); homing waits but is never redone. A touch still shaken is kept and marked. Every touch is recorded (status, `probe_touch` events). One accelerometer listener for all touches, released 5 s after the last, re-attached if dropped.
+- 343 software tests +37 subtests pass. Physical validation pending.
+
 # 0.1.0-beta.10.2.2 — queue-pause validation and filament scan (2026-11-14)
 
 - Attach timing to native lookahead moves before processing/backpressure pauses, including separate intervals for split moves. Preserve native behavior and fail fit attribution on annotation errors.

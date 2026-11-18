@@ -98,13 +98,35 @@ class ContinuousTests(unittest.TestCase):
         self.base.objects['lis2dw'].data_rate=1344
         with self.assertRaisesRegex(RuntimeError,'1600'):self.cell.cmd_START(capture.Command(ACCEL=1,ADC=0))
         self.assertFalse(self.cell.active);self.assertEqual(self.bulk.starts,0)
-    def test_native_accel_overflow_ends_capture_and_marks_incomplete(self):
+    def test_single_accel_overflow_is_a_recorded_gap_capture_continues(self):
+        # 10.2.3: one FIFO overflow (seen at first-layer start on the AD5X)
+        # no longer throws the whole first layer away
         self.start();self.bulk.publish(self.rows(0),overflows=1)
+        self.base.feed()
+        self.assertTrue(self.cell.active)
+        self.assertEqual(self.cell.sensors.overflows_total,1)
+        self.assertEqual(self.cell.sensors.frames_received,len(self.rows(0)))   # batch kept, marked
+        self.bulk.publish(self.rows(1));self.base.feed()
+        self.assertTrue(self.cell.active)
+        records=self.end_records()
+        ev=[r for r in records if r.get('event')=='accel_overflow']
+        self.assertEqual(len(ev),1);self.assertEqual(ev[0]['overflows'],1);self.assertEqual(ev[0]['total'],1)
+        self.assertEqual(records[-1]['sensor_capture']['accel_overflows'],1)
+        self.assertFalse(records[-1]['sensor_capture']['error'])
+    def test_repeated_accel_overflows_end_capture_and_mark_incomplete(self):
+        self.start()
+        for i in range(4):
+            self.bulk.publish(self.rows(i),overflows=1);self.base.feed()
+        self.assertFalse(self.cell.active)
+        records=self.end_records()
+        self.assertIn('capture_error',[r.get('reason') for r in records])
+        self.assertIn('repeated',records[-1]['sensor_capture']['error'])
+    def test_native_accel_errors_still_end_capture_at_once(self):
+        self.start();self.bulk.publish(self.rows(0),errors=1)
         self.base.feed()
         self.assertFalse(self.cell.active)
         records=self.end_records()
         self.assertIn('capture_error',[r.get('reason') for r in records])
-        self.assertTrue(records[-1]['sensor_capture']['error'])
     def test_stale_stream_ends_capture_without_printer_commands(self):
         self.start();self.base.reactor.now+=3;self.cell._tick(self.base.reactor.now)
         self.assertFalse(self.cell.active);self.assertFalse(self.bulk.is_started)
