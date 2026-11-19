@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.9.13 (2026-11-12). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.9.14 (2026-11-19). For printers running Forge-X, use Auto Trim for Forge-X.
 
 ## Contents
 
@@ -12,7 +12,7 @@ Version 3.9.13 (2026-11-12). For printers running Forge-X, use Auto Trim for For
 4. [Your first print](#your-first-print)
 5. [What happens when a print starts](#what-happens-when-a-print-starts)
 6. [How the offset is built and learned](#how-the-offset-is-built-and-learned)
-7. [Bed mesh: KAMP, FULL, SAVED or AUTO](#bed-mesh-kamp-full-saved-or-auto)
+7. [Bed mesh: KAMP, FULL, SAVED, AUTO or SHAPE](#bed-mesh-kamp-full-saved-auto-or-shape)
 8. [Probe speed](#probe-speed)
 9. [Bed heat soak](#bed-heat-soak)
 10. [Nozzle cleaning and wipes](#nozzle-cleaning-and-wipes)
@@ -23,8 +23,9 @@ Version 3.9.13 (2026-11-12). For printers running Forge-X, use Auto Trim for For
 15. [Start options](#start-options)
 16. [Advanced settings](#advanced-settings)
 17. [zMod 1.7.5](#zmod-175)
-18. [Deep Calibration](#deep-calibration)
-19. [Reporting problems](#reporting-problems)
+18. [Shape mesh addon (optional)](#shape-mesh-addon-optional)
+19. [Deep Calibration](#deep-calibration)
+20. [Reporting problems](#reporting-problems)
 
 ## What Auto Trim does
 
@@ -249,7 +250,7 @@ How Auto Trim knows the first layers are done:
 - **Without it:** when the nozzle stays above Z 1.0 mm (about layer 5 at 0.2 mm layers) for two checks in a row, after it has been on the first layer, while printing. A short Z-hop or a pause does not count, but a colour change or a long lift on the first layer can still end the first layers early. The console says when layer numbers are missing.
 - **Prints too short to get there:** learned at the end, by `AUTO_TRIM_LEARN`.
 
-## Bed mesh: KAMP, FULL, SAVED or AUTO
+## Bed mesh: KAMP, FULL, SAVED, AUTO or SHAPE
 
 The `MESH=` option on the `AUTO_TRIM_PREPARE` line decides how the bed is measured for each print. Auto Trim does not make the mesh itself: it runs zMod's KAMP or a full-bed mesh at the right moment (after the nozzle clean and the bed soak, at probing temperature and at the `probe_speed`), and then checks the result.
 
@@ -259,6 +260,7 @@ The `MESH=` option on the `AUTO_TRIM_PREPARE` line decides how the bed is measur
 | `MESH=FULL` | A fresh full-bed mesh, for every print |
 | `MESH=SAVED` | A saved full-bed mesh, checked at 5 points instead of probed |
 | `MESH=AUTO` | KAMP for small prints, the saved mesh for large ones |
+| `MESH=SHAPE` | Like KAMP, but only the grid points near your parts are probed; the rest come from the saved mesh. Needs the optional [shape mesh addon](#shape-mesh-addon-optional) |
 
 ### KAMP
 
@@ -310,6 +312,7 @@ AUTO TRIM: preparing (SAVED mesh (AUTO: KAMP would need 36 points), TRASH clean,
 - **`KAMP`** is the most accurate for each print, because the mesh is always fresh. Large prints take longer to probe, especially at 1 mm/s.
 - **`AUTO`** is about as accurate for small prints and much faster for large ones, as long as the saved mesh was made in the same conditions: the same bed temperature, on a settled bed (`AUTO_TRIM_MESH_CALIBRATE` does both). If the bed has changed, the 5-point check notices and a fresh KAMP mesh is probed anyway.
 - **`SAVED`** always uses the saved mesh, whatever the print size.
+- **`SHAPE`** (with the [addon](#shape-mesh-addon-optional)) is as accurate as KAMP under your parts and faster for parts that fill their rectangle only partly: diagonal, curved or L-shaped parts, or several small parts far apart.
 - **`FULL`** measures the whole bed every print. Slower than KAMP and rarely needed: the first layer only touches the area KAMP measures.
 
 Running a full mesh and KAMP together does not help: KAMP does not refine a full mesh, it builds its own, so the same area would be probed twice and only the KAMP mesh used. Choose one with `MESH=`.
@@ -538,8 +541,9 @@ Run these in the Fluidd or Mainsail console.
 | `AUTO_TRIM_SET CALIBRATION=<value>` | Sets your base offset by hand | `AUTO_TRIM_SET CALIBRATION=0.23` |
 | `AUTO_TRIM_SET MATERIAL=<type> TRIM=<value>` | Sets the adjustment of one filament by hand (not PLA: use `CALIBRATION=` for that) | `AUTO_TRIM_SET MATERIAL=PETG TRIM=0.03` |
 | `AUTO_TRIM_SOAK_CALIBRATE BED=<C>` | Measures how long your bed takes to settle, from a cold bed | `AUTO_TRIM_SOAK_CALIBRATE BED=60` |
-| `AUTO_TRIM_MESH_CALIBRATE BED=<C>` | From a cold bed: nozzle clean, soak calibration, then a full mesh saved for `MESH=SAVED` and `MESH=AUTO` | `AUTO_TRIM_MESH_CALIBRATE BED=60` |
+| `AUTO_TRIM_MESH_CALIBRATE BED=<C>` | From a cold bed: nozzle clean, soak calibration, then a full mesh saved for `MESH=SAVED`, `MESH=AUTO` and `MESH=SHAPE` | `AUTO_TRIM_MESH_CALIBRATE BED=60` |
 | `AUTO_TRIM_SOAK_ABORT` | Stops a running soak calibration | `AUTO_TRIM_SOAK_ABORT` |
+| `AUTO_TRIM_SHAPE_MESH` | With the [shape mesh addon](#shape-mesh-addon-optional): a mesh probing only the grid points near the parts (`MESH=SHAPE` runs it) | `AUTO_TRIM_SHAPE_MESH PROFILE=auto` |
 
 `AUTO_TRIM_PREPARE` and `AUTO_TRIM_LEARN` run from the start and end G-code; you do not type them.
 
@@ -553,6 +557,7 @@ Add these at the end of the `AUTO_TRIM_PREPARE` line in the OrcaSlicer start G-c
 | `MESH=FULL` | A fresh full-bed mesh. Slower |
 | `MESH=SAVED` | The saved mesh, checked at 5 points |
 | `MESH=AUTO` | KAMP for small prints, the saved mesh for large ones |
+| `MESH=SHAPE` | Probe only the grid points near your parts (needs the [shape mesh addon](#shape-mesh-addon-optional)) |
 | `SOAK=AUTO`, `SOAK=300`, `SOAK=OFF` | Bed heat soak: as long as the bed needs, a fixed time, or none |
 | `CHECK=AREA` | Re-probes 5 points after the mesh and applies the drift. About 35 to 40 seconds longer |
 | `CHECK=ALL` | Re-probes every mesh point. Slower |
@@ -639,6 +644,78 @@ Auto Trim works with zMod 1.7.5. What changed there, and what it means:
 - **3MF files** (Orca sending `.gcode.3mf`) work: zMod unpacks the G-code and runs it, start G-code included.
 - **Screen:** GuppyScreen or HelixScreen. With the native Flashforge screen, zMod hands the print to the Flashforge firmware, which Auto Trim does not support.
 
+## Shape mesh addon (optional)
+
+**New in 3.9.14.** An optional addon for zMod that adds `MESH=SHAPE`: a mesh that probes only the grid points near your parts, instead of every point of the rectangle around them. Auto Trim works exactly as before without it.
+
+### What it does
+
+KAMP measures the **rectangle** around everything you print. Klipper's bed mesh has to be a full rectangular grid, so every point of that rectangle is probed, even where nothing is printed. For a part that runs diagonally across the bed, that rectangle is almost the whole bed.
+
+Example: a side panel running from one corner of an AD5X bed to the other covers 17,100 mm² of plate, but its rectangle is 41,000 mm². KAMP probes all 81 points of a 9 x 9 grid.
+
+`MESH=SHAPE`:
+1. Reads your parts' outlines from the print file (Orca writes them when **Label objects** is on).
+2. Lays out the same grid KAMP would, then probes only the points under or near the parts: within one grid spacing, so the mesh is anchored right up to the parts' edges. For the side panel: **48 of the 81 points**.
+3. Fills the other points from your saved full-bed mesh (`auto`, made by `AUTO_TRIM_MESH_CALIBRATE`), first aligned to the fresh points: the saved mesh is shifted and tilted to match them, so it fits the bed as it is today.
+4. Hands Klipper the complete 9 x 9 mesh.
+
+Under the parts the mesh comes from fresh probing; nothing is printed at the filled points. In testing with Klipper's own mesh code, the side panel's mesh was as accurate under the part as probing all 81 points (largest error 0.005 mm against 0.006 mm), with 40% fewer touches.
+
+The console shows what it did:
+```
+AUTO TRIM SHAPE MESH: 9x9 grid over X4.3-215.0 Y5.4-211.6, probing 48 of 81 points (within 26 mm of the print)
+AUTO TRIM SHAPE MESH: probed 48 points, filled 33 from the saved mesh 'auto' (shift +0.015 mm, residual 0.004 mm, largest 0.009 mm)
+```
+If the saved mesh is off from the fresh points by more than 0.06 mm anywhere, it no longer matches the bed (a different plate, re-levelled screws), and you are told to refresh it with `AUTO_TRIM_MESH_CALIBRATE`. Without a saved mesh, the other points are filled from the probed points; that works, but a saved mesh fills them better.
+
+### Requirements
+
+- zMod (AD5X or AD5M). The addon is a small Klipper module (Python); it is not available for the Forge-X or Kiln OS editions.
+- **Label objects** on in OrcaSlicer (Others > Label objects), so the print file contains the parts' outlines. Without them `MESH=SHAPE` uses a KAMP mesh, with a warning.
+- Recommended: a saved full-bed mesh, `AUTO_TRIM_MESH_CALIBRATE BED=60` (your bed temperature).
+
+### Installing it
+
+1. Download the `addons/auto_trim_shape_mesh` folder from this repository and upload the whole folder to `mod_data` (Fluidd or Mainsail: Configuration), so you have `mod_data/auto_trim_shape_mesh/`.
+2. Over SSH, run its installer:
+   ```sh
+   sh /usr/data/config/mod_data/auto_trim_shape_mesh/install_shape_mesh.sh
+   ```
+   It links the module into zMod's Klipper. It never overwrites a real file and never edits your config.
+3. Add this line to `mod_data/user.cfg`, after the Auto Trim include:
+   ```
+   [include auto_trim_shape_mesh/auto_trim_shape_mesh.cfg]
+   ```
+4. **Reboot the printer.** Klipper's `RESTART` does not load new Python code.
+5. Use it on the `AUTO_TRIM_PREPARE` line in Orca's start G-code:
+   ```
+   AUTO_TRIM_PREPARE MATERIAL={filament_type[initial_extruder]} SOAK=AUTO MESH=SHAPE
+   ```
+
+`AUTO_TRIM_SHAPE_MESH` can also be run on its own during a print setup, like a mesh command. Its settings (how far from the parts to probe, the saved profile, the warning limit) are in `auto_trim_shape_mesh.cfg`, all with working defaults.
+
+### Removing it
+
+1. Remove the `[include auto_trim_shape_mesh/auto_trim_shape_mesh.cfg]` line from `mod_data/user.cfg` **first**.
+2. Over SSH:
+   ```sh
+   sh /usr/data/config/mod_data/auto_trim_shape_mesh/uninstall_shape_mesh.sh
+   ```
+   It removes only the links the installer made.
+3. Reboot. You can then delete the `auto_trim_shape_mesh` folder.
+
+Without the addon, `MESH=SHAPE` uses a KAMP mesh and says so (`MESH=SHAPE needs the shape mesh addon`), so a print never fails because the addon is missing. Change the start line back to `MESH=KAMP` to remove the warning.
+
+### What happens when you update other things
+
+- **Auto Trim:** replacing `auto_trim.cfg` does not touch the addon. If an Auto Trim release changes the addon, its release notes say so: upload the new folder, rerun the installer and reboot.
+- **zMod updates** (from Fluidd or Mainsail): the addon's link is an extra file in zMod's Klipper folder; zMod's update keeps it and is not blocked by it. Nothing to do.
+- **Reinstalling zMod, or anything that replaces its whole Klipper folder** (for example a fresh install from USB): the link is gone, and Klipper stops at start with an error about an unknown `[auto_trim_shape_mesh]` section. Rerun the installer and reboot, or remove the include line.
+- **A Klipper or zMod change to how meshes or probing work inside Klipper:** the addon uses Klipper's own mesh and probing code, so such a change could stop `MESH=SHAPE` working, with an error at the mesh step. Switch the start line to `MESH=KAMP` until an updated addon is out.
+- **Deep Calibration 10.2.4 or later** includes the same module and installs it with its own installer: there is no need to install the addon separately. If you do both, the last installer's copy is used (they are the same file).
+- **Stock firmware updates** and new **OrcaSlicer** versions do not affect the addon, as long as Label objects stays on.
+
 ## Deep Calibration
 
 [Deep Calibration](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod/tree/beta), on the `beta` branch of this repository, is an optional first-layer research suite for the AD5X that works alongside Auto Trim. It records what the load cell, the accelerometer and the motion system measure during the first layer, labels it from your babysteps, can find the first-layer offset automatically with the load cell (knee search, which Auto Trim then learns), and measures the bed soak more strictly than `AUTO_TRIM_SOAK_CALIBRATE` (Auto Trim's `SOAK=AUTO` uses its result).
@@ -660,6 +737,7 @@ Please include:
 - `auto_trim.cfg`: the Auto Trim macros
 - `README.md`: this document
 - `CHANGELOG.md`: release history
+- `addons/auto_trim_shape_mesh/`: the optional [shape mesh addon](#shape-mesh-addon-optional) (module, config, installer, uninstaller, tests)
 
 ## Credits
 

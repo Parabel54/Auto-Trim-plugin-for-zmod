@@ -1,0 +1,1 @@
+bed_mesh.py is Klipper's (zMod's ghzserg/zmod_klipper, GPLv3), used unchanged so the tests build meshes with Klipper's own ZMesh. probe.py is a test stand-in that probes a simulated bed. The addon module is copied in at test time.

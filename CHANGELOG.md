@@ -3,6 +3,11 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.9.14] - 2026-11-19
+
+### Added
+- `MESH=SHAPE`, with the new optional shape mesh addon (`addons/auto_trim_shape_mesh`): probes only the grid points near the printed objects (Orca's object outlines) and fills the rest of the grid from the saved full-bed mesh, aligned to the fresh points by a plane fit. For a part running diagonally across an AD5X bed, 48 of 81 points, with the same accuracy under the part as a full KAMP mesh. Without the addon, or without object outlines in the print file, `MESH=SHAPE` uses a KAMP mesh and warns. Everything else is unchanged from 3.9.13.
+
 ## [3.9.13] - 2026-11-12
 
 ### Fixed
