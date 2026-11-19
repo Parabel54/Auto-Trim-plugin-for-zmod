@@ -18,7 +18,11 @@ class IntegratedSetupTests(unittest.TestCase):
         self.assertIn('auto_capture: True',cfg)
         self.assertIn('[include deep_calibration_start.cfg]',cfg)
         self.assertNotIn('[live_z_mesh]',cfg)
-        self.assertNotIn('[auto_trim',cfg)
+        # The only Auto Trim named section is the bundled shape mesh module
+        # (10.2.4); Auto Trim's own sections and macros are never bundled
+        import re
+        self.assertEqual(re.findall(r'^\[(auto_trim\w*)', cfg, re.M), ['auto_trim_shape_mesh'])
+        self.assertNotRegex(cfg, r'(?m)^\[gcode_macro (_?AUTO_TRIM)')
     def test_main_module_registers_capture_and_mesh_commands_without_collision(self):
         f=capture.CaptureTests();f.setUp()
         try:

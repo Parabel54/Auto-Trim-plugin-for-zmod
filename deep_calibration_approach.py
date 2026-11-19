@@ -21,7 +21,7 @@ class DeepCalibrationApproach:
         self.clearance = config.getfloat('slow_clearance', 1., minval=1., maxval=5.)
         self.max_age = config.getfloat('reference_max_age', 300., minval=1., maxval=600.)
         self.vib_gate = config.getboolean('vibration_gate', True)
-        self.vib_limit = config.getfloat('vibration_limit', 150., minval=10., maxval=5000.)
+        self.vib_limit = config.getfloat('vibration_limit', 400., minval=10., maxval=5000.)
         self.vib_window = config.getfloat('vibration_window', .3, minval=.1, maxval=2.)
         self.vib_max_wait = config.getfloat('vibration_max_wait', 10., minval=0., maxval=120.)
         self.vib_retries = config.getint('vibration_retries', 2, minval=0, maxval=5)

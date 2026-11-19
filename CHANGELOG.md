@@ -1,3 +1,10 @@
+# 0.1.0-beta.10.2.4 — G-code context read during the soak, vibration limit 400, shape mesh (2026-11-19)
+
+- `gcode_context_start: soak` (default): the print file is parsed when Auto Trim announces its bed heat soak wait (console output handler, no Auto Trim change), not when Deep Calibration is armed. Arming reuses the read; the read time is reported. Without a soak wait the file is not read and the recording runs without slicer context (`slicer_context_skipped`). `arm` keeps the 10.2.2 behaviour. Cause: a 10.2.3 print shut down with `Timer too close` three seconds into the first layer; Klipper's reactor stalled (up to 0.46 s) while the background parse of the 4.4 MB file, started at arming, competed through the GIL.
+- `vibration_limit` default 400 mm/s2 (was 150): the AD5X reads 150-170 during probing with fans and heaters on; at 150 a KAMP mesh took 63 minutes with 248 waits and 75 redos on ordinary noise.
+- The Auto Trim shape mesh is built in (`auto_trim_shape_mesh.py`, linked by the installer; `[auto_trim_shape_mesh]` in `deep_calibration.cfg`): `MESH=SHAPE` on Auto Trim 3.9.14 or later probes only the grid points near the objects and fills the rest from the saved mesh.
+- 367 software tests +37 subtests pass. Physical validation pending.
+
 # 0.1.0-beta.10.2.3 — vibration gate and accelerometer overflows (2026-11-18)
 
 - A single accelerometer FIFO overflow no longer stops a recording: it is recorded as an `accel_overflow` event and the batch keeps its overflow mark (the analyser treats it as a gap). More than `accel_overflow_limit` (3) overflows within 60 s, or any data error, still stop it. On the AD5X, 10.2.2 first-layer recordings stopped about a second in on one overflow.

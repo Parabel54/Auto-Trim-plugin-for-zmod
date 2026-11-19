@@ -7,7 +7,7 @@ ROOT=Path(__file__).resolve().parents[1]
 class InstallerTests(unittest.TestCase):
     def fixture(self,base):
         pkg=base/'package';pkg.mkdir()
-        for name in ('deep_calibration_gcode.py','deep_calibration.py','deep_calibration_sensors.py','deep_calibration_mesh.py','deep_calibration_approach.py','deep_calibration_auto_mesh.cfg','deep_calibration_start.cfg'):
+        for name in ('deep_calibration_gcode.py','deep_calibration.py','deep_calibration_sensors.py','deep_calibration_mesh.py','deep_calibration_approach.py','auto_trim_shape_mesh.py','deep_calibration_auto_mesh.cfg','deep_calibration_start.cfg'):
             (pkg/name).parent.mkdir(parents=True,exist_ok=True)
             (pkg/name).write_text((ROOT/name).read_text())
         extras=[base/'klipper13',base/'native_klipper']
@@ -21,7 +21,7 @@ class InstallerTests(unittest.TestCase):
             for i in range(2):
                 result=run();self.assertEqual(result.returncode,0,result.stderr)
                 for p in extras:
-                    for name in ('deep_calibration_gcode.py','deep_calibration.py','deep_calibration_sensors.py','deep_calibration_mesh.py','deep_calibration_approach.py'):
+                    for name in ('deep_calibration_gcode.py','deep_calibration.py','deep_calibration_sensors.py','deep_calibration_mesh.py','deep_calibration_approach.py','auto_trim_shape_mesh.py'):
                         self.assertTrue((p/name).is_symlink());self.assertEqual((p/name).resolve(),pkg/name)
     def test_regular_file_conflict_preflights_both_roots_before_mutation(self):
         with tempfile.TemporaryDirectory() as tmp:

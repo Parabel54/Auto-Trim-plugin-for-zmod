@@ -6,10 +6,12 @@ worker thread are used; virtual_sdcard's cursor is never read or changed here.
 import collections
 import hashlib
 import json
+import logging
 import math
 import os
 import re
 import threading
+import time
 import xml.etree.ElementTree as ET
 
 
@@ -394,6 +396,18 @@ class GcodeContext:
     def __init__(self, owner, config):
         self.owner = owner
         self.enabled = config.getboolean('gcode_context', True)
+        # When to read the print file (10.2.4). Parsing a long G-code file on
+        # the printer takes tens of seconds and, through Python's GIL, slows
+        # Klipper's reactor while it runs; at the first layer that ended a
+        # print with "Timer too close". 'soak' starts the read when Auto Trim
+        # announces its bed heat soak wait, so it is done long before the
+        # first layer; without a soak wait the file is not read. 'arm' reads
+        # it when Deep Calibration is armed (10.2.2 behaviour).
+        self.start_policy = config.get('gcode_context_start', 'soak').strip().lower()
+        if self.start_policy not in ('soak', 'arm'):
+            raise config.error('gcode_context_start must be soak or arm')
+        self.listening = False
+        self.skip_reported = False
         self.settle = config.getfloat('segment_settle', .5, minval=.2, maxval=30.)
         if not finite(self.settle): raise config.error('segment_settle must be finite')
         self.worker = None
@@ -519,8 +533,10 @@ class GcodeContext:
             return
         self.state = 'loading'
         def scan():
+            began = time.monotonic()
             try:
                 snapshot = parse_file(path, cancel)
+                self.read_seconds = time.monotonic() - began
                 # Cache immutable results by actual file content, not filename.
                 with self.lock:
                     if cancel.is_set(): return
@@ -541,15 +557,60 @@ class GcodeContext:
         self.worker = threading.Thread(target=scan, name='deep-calibration-gcode', daemon=True)
         self.worker.start()
 
+    def _listen(self):
+        # Watch the console for Auto Trim's soak announcement (no change to
+        # Auto Trim needed). Attached once; tolerated if unavailable.
+        if self.listening: return
+        self.listening = True
+        register = getattr(self.owner.gcode, 'register_output_handler', None)
+        if callable(register):
+            register(self._on_output)
+
+    def _on_output(self, msg):
+        try:
+            if (self.enabled and self.start_policy == 'soak' and isinstance(msg, str)
+                    and 'AUTO TRIM: bed heat soak' in msg and 'waiting' in msg):
+                self.request()          # the printer is only waiting now
+        except Exception:
+            logging.exception('deep_calibration: G-code context preload')
+
+    def _requested_for_current_file(self):
+        try:
+            path = self._path()
+        except Exception:
+            return False
+        return path is not None and path == self.path and self.state in ('loading', 'ready', 'error', 'unsupported')
+
     def poll(self):
         if not self.enabled: return
+        self._listen()
         if self.owner.active or self.owner.armed is not None or self.owner.knee is not None:
-            self.request()
+            if self.start_policy == 'arm' or self._requested_for_current_file():
+                self.request()
+            elif self.state != 'skipped':
+                # No soak wait before the first layer: reading the file now
+                # would compete with it. Record without slicer context.
+                self.state = 'skipped'
+                self.error = ('no soak wait before the first layer: G-code context not read '
+                              '(gcode_context_start: soak)')
+                self.snapshot = None; self.path = None
+                self.timeline.clear(); self.reset_gate()
+                self.skip_reported = False
+            if self.state == 'skipped' and not self.skip_reported and (self.owner.active or self.owner.armed is not None):
+                self.skip_reported = True
+                self.owner.gcode.respond_info('DEEP CALIBRATION: ' + self.error)
+                if self.owner.active:
+                    self.owner._event('slicer_context_skipped', reason=self.error)
         with self.lock:
             pending, self.pending = self.pending, None
         if pending and pending[0] == self.generation:
             self.snapshot, self.error = pending[1:]
             self.state = 'ready' if self.snapshot else 'error'
+            if self.snapshot and getattr(self, 'read_seconds', None) is not None:
+                # How long the read took on this printer: it must fit in the soak
+                self.owner.gcode.respond_info('DEEP CALIBRATION: G-code context read in %.1f s (%d bytes)'
+                                              % (self.read_seconds, self.snapshot.get('bytes') or 0))
+                self.read_seconds = None
         if self.owner.active and self.snapshot and self.emitted_hash != self.snapshot['file_sha256']:
             self.owner._event('slicer_snapshot', **public_snapshot(self.snapshot))
             self.emitted_hash = self.snapshot['file_sha256']
@@ -645,6 +706,7 @@ class GcodeContext:
     def status(self):
         s = self.snapshot or {}
         return dict(enabled=self.enabled, state=self.state, error=self.error,
+                    start_policy=self.start_policy,
                     file_sha256=s.get('file_sha256'), physics_sha256=s.get('physics_sha256'),
                     setting_count=len(s.get('settings', {})), indexed_commands=len(s.get('segments', {})),
                     issues=s.get('issues', []), timing_observer_installed=bool(self.handlers),

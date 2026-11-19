@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.2.3 (2026-11-18). **Current official development continuation of beta 9.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
+Version 0.1.0-beta.10.2.4 (2026-11-19). **Current official development continuation of beta 9.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
 
 ## Contents
 
@@ -189,6 +189,29 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
 
+## Beta 10.2.4: G-code context read during the soak, vibration limit 400, shape mesh
+
+Current continuation: **0.1.0-beta.10.2.4**. Replace the full folder, rerun the installer and reboot while idle.
+
+### Why: a print shut down three seconds into the first layer
+
+On the AD5X (zMod 1.7.5), a print with 10.2.3 shut down with `MCU 'mcu' shutdown: Timer too close` three seconds after the first layer started. Klipper's log showed its reactor stalling from the moment the recording began (0.11, 0.14, 0.10, 0.46 and 0.38 s), with Deep Calibration's `_tick` taking about 0.1 s on its own. Garbage collection was not involved (its last full pass was four minutes earlier, none deferred).
+
+The G-code context reader (10.2) parses the whole print file in a background thread, started when Deep Calibration is armed, here three seconds before the first layer. Python runs one thread at a time (the GIL), so while the parse runs, Klipper's reactor gets only a share of the processor. The print's 4.4 MB file took 3.8 s of CPU on a 2.1 GHz server core, far longer on the printer. The three 10.2.2 first-layer recordings that stopped about a second in on an accelerometer overflow (17–18 November) fit the same cause: a starved reactor reads the accelerometer late.
+
+### What changes
+
+- **`gcode_context_start: soak`** (default): the file is read when Auto Trim announces its bed heat soak wait (`AUTO TRIM: bed heat soak ... waiting`), seen on the console with no change to Auto Trim. The read finishes during the soak; arming later finds it done (or still loading) and does not read again. The console says how long the read took (`G-code context read in ... s`): it must fit inside the soak.
+- **No soak wait, no read:** with `SOAK=OFF`, or a soak already covered by the nozzle clean, the file is not read at all. The recording runs without slicer context (the 10.1 eligibility policy) and says so once (`G-code context not read`, `slicer_context_skipped` event). A previous print's context is never reused.
+- **`gcode_context_start: arm`** keeps the 10.2.2 behaviour; `gcode_context: False` still turns the reader off.
+- **`vibration_limit` 400 mm/s²** (was 150). During probing the AD5X reads 150–170 with fans and heaters on (the idle checks, 60–85, were taken with them off): at 150, a KAMP mesh of 81 points made 248 waits and 75 redos on ordinary noise and took 63 minutes. Real disturbances measured 184–357.
+
+### Shape mesh built in
+
+10.2.4 includes the Auto Trim shape mesh: with Auto Trim 3.9.14 or later, `MESH=SHAPE` on the `AUTO_TRIM_PREPARE` line probes only the bed mesh grid points near the printed objects (Orca's object outlines) and fills the rest from the saved full-bed mesh (`auto`), aligned to the fresh points by a plane fit. For a side panel running diagonally across the bed: 48 of 81 points, with the same accuracy under the part as a full KAMP mesh. The installer links `auto_trim_shape_mesh.py` with the other modules and `deep_calibration.cfg` contains its `[auto_trim_shape_mesh]` section, so the separate Auto Trim addon is not needed (installing both is harmless: the same file). Every touch still goes through the guarded approach and the vibration gate. What it does in detail: the Auto Trim README, *Shape mesh addon (optional)*.
+
+Software tests: 367 pass with 37 subtests (24 new: 11 for the G-code read timing and the vibration default, 13 for the shape mesh, which builds meshes with Klipper's own `ZMesh`). Physical validation pending: the next print shows the read time and whether the first layer runs clean.
+
 ## Beta 10.2.3: vibration gate and accelerometer overflows
 
 Current continuation: **0.1.0-beta.10.2.3**. Orca start G-code stays unchanged. Replace the full folder, rerun the installer and reboot while idle (a reboot loads changed Python; `RESTART` does not).
@@ -210,7 +233,7 @@ The load cell feels the touch, so shaking from outside, such as another printer 
 The toolhead accelerometer measures exactly that shaking. Around every probe touch (meshes, KAMP, `PROBE`, soak rounds, homing with the probe):
 
 1. **Before the touch,** with the nozzle still after any fast approach, the shaking is measured for 0.3 s (`vibration_window`). Above 150 mm/s² (`vibration_limit`) the touch waits until it settles, up to 10 s (`vibration_max_wait`).
-2. **During the touch,** the shaking is measured again. If the touch itself was shaken, its result is discarded, the nozzle goes back up, and the touch is made again, up to 2 times (`vibration_retries`). Homing touches wait but are never redone: Klipper re-zeroes Z on each homing touch.
+2. **During the touch,** the shaking is measured again (the limit is 400 mm/s² since 10.2.4). If the touch itself was shaken, its result is discarded, the nozzle goes back up, and the touch is made again, up to 2 times (`vibration_retries`). Homing touches wait but are never redone: Klipper re-zeroes Z on each homing touch.
 3. **If it is still shaken after that,** the last touch is kept and marked as disturbed, so a mesh is not failed halfway.
 
 Shaking is the RMS of each axis' deviation from its own mean, combined, in mm/s²: gravity and the board's tilt drop out. A quiet AD5X reads about 60–85 (the idle checks), so 150 is about twice the quiet level; raise it if touches wait on a printer that is simply noisier.
@@ -280,7 +303,7 @@ Keep your existing `DEEP_CALIBRATION_ARM MATERIAL=... HEIGHT=... WIDTH=... SPEED
 
 ### Automatic file capture
 
-With `gcode_context: True` (default), the plugin reads the selected virtual-SD file on a separate handle in a background thread. It hashes the complete UTF-8 G-code, reads Orca's header/footer config block and retains all exported keys verbatim, including percentages, arrays, disabled options and future unknown keys. Coverage against the pinned 378-key process registry lists exported and missing keys. Missing values are not filled from defaults. Cached parsed contents are keyed by file/settings hashes; replacement files and changed sidecars invalidate the active snapshot.
+With `gcode_context: True` (default), the plugin reads the selected virtual-SD file on a separate handle in a background thread. Since 10.2.4 it does so while Auto Trim's bed heat soak waits (`gcode_context_start: soak`), and not at all without a soak wait; `gcode_context_start: arm` reads it at arming, as before. It hashes the complete UTF-8 G-code, reads Orca's header/footer config block and retains all exported keys verbatim, including percentages, arrays, disabled options and future unknown keys. Coverage against the pinned 378-key process registry lists exported and missing keys. Missing values are not filled from defaults. Cached parsed contents are keyed by file/settings hashes; replacement files and changed sidecars invalidate the active snapshot.
 
 The full settings snapshot is stored once as a `slicer_snapshot` event. Each force sample contains `slicer_context`: emitted role, local height/width, feed, E/mm, tool/object identity, selected material/filament/nozzle dimensions, physics fingerprint and eligibility reasons. Live heater readings/targets, fan commands, pressure advance, overrides and mesh identity are recorded. The existing ARM recipe remains as declared metadata; emitted dimensions and actual extrusion velocity are used by the new analysis where available.
 
@@ -527,7 +550,7 @@ In `[deep_calibration]` in `deep_calibration.cfg`:
 | `max_file_mb`, `accel_rotate_mb`, `accel_max_mb`, `storage_reserve_mb` | 256, 32, 512, 64 | Storage limits |
 | `startup_integration` | False | Deep Calibration's own print start. Leave it off: Auto Trim prepares prints |
 
-In `[deep_calibration_approach]`: `approach_speed` (5 mm/s), `slow_clearance` (1 mm), `reference_max_age` (300 s), and the vibration gate: `vibration_gate` (True), `vibration_limit` (150 mm/s²), `vibration_window` (0.3 s), `vibration_max_wait` (10 s), `vibration_retries` (2), `accelerometer` (lis2dw). In `[deep_calibration]`: `accel_overflow_limit` (3 within 60 s).
+In `[deep_calibration_approach]`: `approach_speed` (5 mm/s), `slow_clearance` (1 mm), `reference_max_age` (300 s), and the vibration gate: `vibration_gate` (True), `vibration_limit` (400 mm/s²; 150 in 10.2.3), `vibration_window` (0.3 s), `vibration_max_wait` (10 s), `vibration_retries` (2), `accelerometer` (lis2dw). In `[deep_calibration]`: `accel_overflow_limit` (3 within 60 s).
 
 ## Limits
 
