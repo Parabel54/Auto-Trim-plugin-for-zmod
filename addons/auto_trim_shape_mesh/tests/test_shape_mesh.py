@@ -29,7 +29,7 @@ class Cmd:
 
 class Fixture:
     def __init__(self, polygons, profiles=None, mesh_min=(0., 0.), mesh_max=(215., 215.), counts=(9, 9)):
-        self.messages = []; self.active = None; self.commands = {}
+        self.messages = []; self.active = None; self.commands = {}; self.events = []
         cfg = dict(x_count=counts[0], y_count=counts[1], mesh_x_pps=2, mesh_y_pps=2, algo='bicubic', tension=.2)
         bmc = S(mesh_config=dict(cfg), orig_config=dict(cfg, mesh_min=mesh_min, mesh_max=mesh_max),
                 probe_mgr=S(get_zero_ref_mode=lambda: bed_mesh.ZrefMode.DISABLED))
@@ -37,12 +37,13 @@ class Fixture:
         objects = dict(gcode=S(register_command=lambda n, f, desc=None: self.commands.__setitem__(n, f),
                                respond_info=self.messages.append, error=RuntimeError),
                        bed_mesh=self.bed_mesh,
+                       toolhead=S(wait_moves=lambda: self.events.append('wait_moves')),
                        exclude_object=S(get_status=lambda t: dict(objects=[dict(name='o%d' % i, polygon=[list(p) for p in poly]) for i, poly in enumerate(polygons)])))
         printer = S(lookup_object=lambda n, d=None: objects.get(n, d), get_reactor=lambda: S(monotonic=lambda: 0.))
         config = S(get_printer=lambda: printer, getfloat=lambda n, d, **k: d, get=lambda n, d=None: d,
                    getsection=lambda n: S(getfloat=lambda o, d, **k: d), get_name=lambda: 'auto_trim_shape_mesh')
         self.module = sm.ShapeMesh(config)
-    def _set(self, mesh): self.active = mesh
+    def _set(self, mesh): self.active = mesh; self.events.append('set_mesh')
     def run(self, surface, **params):
         fakeprobe.SURFACE['fn'] = surface; fakeprobe.SURFACE['log'] = []
         cmd = Cmd(**params); self.commands['AUTO_TRIM_SHAPE_MESH'](cmd)
@@ -134,6 +135,21 @@ class ShapeMeshTests(unittest.TestCase):
         f = Fixture([self.poly], dict(auto=full_profile(bed_shape)))
         f.run(bed_shape, PROBE_SPEED=1.0, PROFILE='auto')
         self.assertEqual(fakeprobe.SURFACE['log'][0]['params']['PROBE_SPEED'], '1.0')
+
+    def test_mesh_is_built_after_the_moves_not_inside_finalize(self):
+        # On the printer, building inside Klipper's finalize callback (with
+        # the next move already timed) shut it down with "Timer too close"
+        f = Fixture([self.poly], dict(auto=full_profile(bed_shape)))
+        built_in_finalize = []
+        orig = f.module._finalize
+        def spy(results):
+            r = orig(results); built_in_finalize.append(f.active is not None); return r
+        f.module._finalize = spy
+        f.module.helper.finalize_callback = spy
+        f.run(bed_shape)
+        self.assertEqual(built_in_finalize, [False])
+        self.assertEqual(f.events, ['wait_moves', 'set_mesh'])
+        self.assertIsNotNone(f.active)
 
     def test_serpentine_order(self):
         order = sm.serpentine([0, 1, 2, 3, 4, 5, 6, 7, 8], 3)

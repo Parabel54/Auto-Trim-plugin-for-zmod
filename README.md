@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.9.14 (2026-11-19). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.9.15 (2026-11-19). For printers running Forge-X, use Auto Trim for Forge-X.
 
 ## Contents
 
@@ -646,7 +646,7 @@ Auto Trim works with zMod 1.7.5. What changed there, and what it means:
 
 ## Shape mesh addon (optional)
 
-**New in 3.9.14.** An optional addon for zMod that adds `MESH=SHAPE`: a mesh that probes only the grid points near your parts, instead of every point of the rectangle around them. Auto Trim works exactly as before without it.
+**New in 3.9.14; use addon 1.0.1 or later (3.9.15).** An optional addon for zMod that adds `MESH=SHAPE`: a mesh that probes only the grid points near your parts, instead of every point of the rectangle around them. Auto Trim works exactly as before without it.
 
 ### What it does
 

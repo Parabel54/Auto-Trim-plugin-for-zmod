@@ -3,6 +3,11 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.9.15] - 2026-11-19
+
+### Fixed
+- Shape mesh addon 1.0.1: with 1.0.0, the printer shut down with `MCU 'mcu' shutdown: Timer too close` right after a `MESH=SHAPE` mesh. The addon built the mesh inside Klipper's probing finalize step, just after Klipper had timed the next move (the lift after the last touch); building took 0.4 s on an AD5X, so that move's steps were sent too late. The mesh is now built after probing has ended and all moves have finished. **If you installed addon 1.0.0, replace the `auto_trim_shape_mesh` folder with 1.0.1 and reboot** (rerunning the installer is not needed: the link stays the same). `auto_trim.cfg` is unchanged apart from its version.
+
 ## [3.9.14] - 2026-11-19
 
 ### Added
