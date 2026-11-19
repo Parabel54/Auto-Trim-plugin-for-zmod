@@ -188,6 +188,7 @@ class SensorExtension:
         self.writer=None;self.batches_received=self.frames_received=0;self.last_batch_time=None
         self.callback_max_seconds=0.
         self.overflow_times=[];self.overflows_total=0
+        self.joined_running=False;self.counter_base=None
         if self.accel_enabled:
             chip=self.printer.lookup_object(self.accel_name,None)
             self.helper=getattr(chip,'batch_bulk',None)
@@ -225,6 +226,8 @@ class SensorExtension:
                                                self.rotate_bytes,self.max_bytes,self.reserve_bytes)
                 # Rotation never changes measurement state or other clients.
                 self.attached=True
+                # joining a stream already running (e.g. the vibration gate's)?
+                self.joined_running=bool(self.helper.client_cbs);self.counter_base=None
                 self.helper.add_client(self.callback)
             self.begin=self.reactor.monotonic()
         except Exception:
@@ -237,7 +240,18 @@ class SensorExtension:
         try:
             if not self.owner.active or not self.accel_enabled:return False
             rows=message.get('data',())
-            errors=message.get('errors',0);overflows=message.get('overflows',0)
+            # The native reader reports running totals since the stream
+            # started (FixedFreqReader.last_overflows), repeated in every
+            # batch: react to increases only. Joining a stream that was
+            # already running (the vibration gate may have started it), the
+            # first batch is the baseline.
+            total_errors=int(message.get('errors',0) or 0);total_overflows=int(message.get('overflows',0) or 0)
+            if self.counter_base is None:
+                self.counter_base=(total_errors,total_overflows) if self.joined_running else (0,0)
+            base_errors,base_overflows=self.counter_base
+            errors=total_errors-base_errors if total_errors>=base_errors else total_errors
+            overflows=total_overflows-base_overflows if total_overflows>=base_overflows else total_overflows
+            self.counter_base=(total_errors,total_overflows)
             if errors:
                 self.error='native acceleration errors/overflows: %s/%s'%(errors,overflows)
                 return False

@@ -114,13 +114,22 @@ class ContinuousTests(unittest.TestCase):
         self.assertEqual(records[-1]['sensor_capture']['accel_overflows'],1)
         self.assertFalse(records[-1]['sensor_capture']['error'])
     def test_repeated_accel_overflows_end_capture_and_mark_incomplete(self):
+        # the native reader reports a running total: 1, 2, 3, 4 = four overflows
         self.start()
         for i in range(4):
-            self.bulk.publish(self.rows(i),overflows=1);self.base.feed()
+            self.bulk.publish(self.rows(i),overflows=i+1);self.base.feed()
         self.assertFalse(self.cell.active)
         records=self.end_records()
         self.assertIn('capture_error',[r.get('reason') for r in records])
         self.assertIn('repeated',records[-1]['sensor_capture']['error'])
+    def test_running_total_reported_again_is_one_overflow(self):
+        # 10.2.5: the same total in every batch is one overflow, not four
+        self.start()
+        for i in range(6):
+            self.bulk.publish(self.rows(i),overflows=1);self.base.feed()
+        self.assertTrue(self.cell.active,self.cell.sensors.error)
+        self.assertEqual(self.cell.sensors.overflows_total,1)
+
     def test_native_accel_errors_still_end_capture_at_once(self):
         self.start();self.bulk.publish(self.rows(0),errors=1)
         self.base.feed()

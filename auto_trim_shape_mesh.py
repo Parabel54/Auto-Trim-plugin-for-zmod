@@ -9,6 +9,12 @@
 # Nothing is printed at the filled points; where the part is, the mesh comes
 # from fresh probing.
 #
+# The mesh is built after probing has ended and the toolhead has finished its
+# moves (1.0.1). Klipper calls the probing helper's finalize callback right
+# after committing the next move to a time a fraction of a second ahead;
+# building the mesh inside that callback took 0.4 s on an AD5X, the move's
+# steps were sent too late, and the printer shut down with "Timer too close".
+#
 # The grid (area and point count) is laid out as Klipper's adaptive mesh does
 # for the same area, and the probing goes through Klipper's ProbePointsHelper,
 # like a normal mesh: the probe's own speed, samples and retries apply, and
@@ -22,7 +28,7 @@ try:
 except ImportError:          # imported outside Klipper (tests)
     bed_mesh_module = probe_module = None
 
-VERSION = '1.0.0'
+VERSION = '1.0.1'
 
 
 def _inside(px, py, poly):
@@ -191,6 +197,7 @@ class ShapeMesh:
             except Exception:
                 pass
         self.pending = None
+        self.results = None
         self.last = None
         self.gcode.register_command('AUTO_TRIM_SHAPE_MESH', self.cmd_SHAPE_MESH,
                                     desc='Mesh probing only the grid points near the printed objects; the rest from the saved mesh')
@@ -248,15 +255,25 @@ class ShapeMesh:
                             base=gcmd.get('PROFILE', self.base_profile), reach=reach, gcmd=gcmd)
         gcmd.respond_info('AUTO TRIM SHAPE MESH: %dx%d grid over X%.1f-%.1f Y%.1f-%.1f, probing %d of %d points (within %.0f mm of the print)'
                           % (nx, ny, lo[0], hi[0], lo[1], hi[1], len(order), len(nodes), reach))
+        self.results = None
         self.helper.update_probe_points([list(nodes[k]) for k in order], 3)
         self.helper.use_xy_offsets(True)
         self.helper.start_probe(gcmd)
+        # Probing has ended. Build the mesh only once nothing is moving:
+        # a long calculation is then harmless.
+        self.printer.lookup_object('toolhead').wait_moves()
+        p, results = self.pending, self.results
+        self.pending = self.results = None
+        if p is not None and results is not None:
+            self._build(p, results)
 
     def _finalize(self, results):
-        p = self.pending
-        self.pending = None
-        if p is None:
-            return None
+        # Called by Klipper's probing helper with the next move already timed:
+        # keep this instant, only store the results.
+        self.results = list(results)
+        return None
+
+    def _build(self, p, results):
         order = p['order']
         if len(results) != len(order):
             raise self.gcode.error('AUTO_TRIM_SHAPE_MESH: %d results for %d points' % (len(results), len(order)))

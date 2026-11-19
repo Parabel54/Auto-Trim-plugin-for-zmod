@@ -1,3 +1,11 @@
+# 0.1.0-beta.10.2.5 — review fixes and shape mesh timing (2026-11-19)
+
+- Accelerometer errors and overflows are native running totals: only increases count (baseline on joining a running stream); the acceleration file records per-batch increases. One overflow no longer stops a recording after four batches.
+- Vibration gate: listener kept for the whole wait and touch; rows from batches with rising error/overflow totals untrusted; full valid coverage required; touch quality quiet/shaken/unknown, unknown marked disturbed.
+- vibration_analysis: windows touching driver-marked batches excluded.
+- Shape mesh 1.0.1: mesh built after probing and all moves have finished, not in the probing finalize callback (0.4 s there shut an AD5X down with Timer too close).
+- 369 software tests +37 subtests pass; the independent review's 4 regression tests pass.
+
 # 0.1.0-beta.10.2.4 — G-code context read during the soak, vibration limit 400, shape mesh (2026-11-19)
 
 - `gcode_context_start: soak` (default): the print file is parsed when Auto Trim announces its bed heat soak wait (console output handler, no Auto Trim change), not when Deep Calibration is armed. Arming reuses the read; the read time is reported. Without a soak wait the file is not read and the recording runs without slicer context (`slicer_context_skipped`). `arm` keeps the 10.2.2 behaviour. Cause: a 10.2.3 print shut down with `Timer too close` three seconds into the first layer; Klipper's reactor stalled (up to 0.46 s) while the background parse of the 4.4 MB file, started at arming, competed through the GIL.

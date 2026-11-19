@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.2.4 (2026-11-19). **Current official development continuation of beta 9.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
+Version 0.1.0-beta.10.2.5 (2026-11-19). **Current official development continuation of beta 9.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
 
 ## Contents
 
@@ -188,6 +188,18 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 **By hand:** `DEEP_CALIBRATION_MARK LABEL=<label> NOTE="..."` during a recording. Labels: `GOOD`, `TOO_HIGH`, `TOO_LOW`, `TRAVEL`, `TRANSITION` and `UNLABELLED`. `DC_MARK_GOOD` is a shortcut for `GOOD`, handy as a screen button. A label you set by hand after the last babystep is kept: the automatic `GOOD` at layer 2 does not replace it.
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
+
+## Beta 10.2.5: review fixes and shape mesh timing
+
+Current continuation: **0.1.0-beta.10.2.5**. Replace the full folder, rerun the installer and reboot while idle. Fixes for an independent review of 10.2.3 (archive note 31), whose four regression tests now pass, and for the shape mesh:
+
+- **Accelerometer counters are running totals.** The native reader reports errors and overflows as totals since the stream started, repeated in every batch. 10.2.3 and 10.2.4 counted each report as new, so one overflow still stopped a recording after four batches. Now only increases count, with the first batch as baseline when the recording joins a stream already running (the vibration gate may have started it). The acceleration file records the per-batch increase.
+- **The vibration gate keeps its listener for the whole wait.** It let go 5 s after the last touch even during a 10 s wait, which then ended without data and kept the touch unmarked.
+- **Unreliable data is never quiet.** Rows from a batch whose error or overflow total rose are not trusted; a measurement counts only for a window fully covered by valid, finite samples without gaps. Every touch has a quality, `quiet`, `shaken` or `unknown`; unknown is marked disturbed like shaken.
+- **Analysis** excludes any window touching a driver-marked batch, even without a timestamp gap.
+- **Shape mesh 1.0.1:** the mesh is built after probing and all moves have finished, not inside Klipper's probing finalize step. Building there took 0.4 s on an AD5X right after Klipper had timed the next move, and the printer shut down with `Timer too close`.
+
+Software tests: 369 pass with 37 subtests, and the review's 4 regression tests pass. Physical validation pending.
 
 ## Beta 10.2.4: G-code context read during the soak, vibration limit 400, shape mesh
 

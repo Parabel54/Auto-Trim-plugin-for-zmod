@@ -82,7 +82,11 @@ def analyze_vibration(run, output, window=.25):
                 # do not mistake a short fragment for aligned continuous data.
                 if (result is None or result['span_s']<window*.9
                         or clock-selected[-1]['t']>.005
-                        or any(b['t']-a['t']>1.5/1600. for a,b in zip(selected,selected[1:]))):
+                        or any(b['t']-a['t']>1.5/1600. for a,b in zip(selected,selected[1:]))
+                        # 10.2.5: lost conversions need not leave a timestamp
+                        # gap; a window touching a batch marked by the driver
+                        # (errors or overflows) is excluded too
+                        or any(r.get('errors') or r.get('overflows') for r in selected)):
                     unmatched+=1;continue
                 matched+=1
                 writer.writerow(dict(force_print_time=clock,force_raw=row['raw'],force_filtered_raw=row['filtered_raw'],

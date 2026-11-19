@@ -49,6 +49,9 @@ class DeepCalibrationApproach:
         self.vib_mode = 'off' if not self.vib_gate else 'not_started'
         self.touches = collections.deque(maxlen=200)
         self.vib_waited = self.vib_redone = self.vib_disturbed = 0
+        # Running error/overflow totals of the stream (10.2.5): rows from a
+        # batch where either increased are not trusted
+        self.vib_counter_base = (0, 0)
 
     def _vib_helper(self):
         chip = self.printer.lookup_object(self.accel_name, None)
@@ -60,9 +63,16 @@ class DeepCalibrationApproach:
     def _vib_cb(self, msg):
         if not self.vib_listening:
             return False
+        totals = (int(msg.get('errors', 0) or 0), int(msg.get('overflows', 0) or 0))
+        if self.vib_counter_base is None:
+            self.vib_counter_base = totals          # joined a running stream: baseline
+        valid = all(t <= b for t, b in zip(totals, self.vib_counter_base)) or totals == self.vib_counter_base
+        if any(t < b for t, b in zip(totals, self.vib_counter_base)):
+            valid = totals == (0, 0)                # the stream restarted
+        self.vib_counter_base = totals
         for row in msg.get('data', ()):
             if len(row) >= 4:
-                self.vib_samples.append((row[0], row[1], row[2], row[3]))
+                self.vib_samples.append((row[0], row[1], row[2], row[3], valid))
         if self.reactor.monotonic() - self.vib_last_use > 5.:
             # Let go a few seconds after the last touch
             self.vib_listening = False
@@ -79,8 +89,10 @@ class DeepCalibrationApproach:
         if self.vib_listening and (not isinstance(clients, list) or self._vib_cb in clients):
             return True
         # Not listening, or Klipper dropped our listener (sensor error, stop):
-        # attach (again)
+        # attach (again). Joining a stream already running, its first batch
+        # is the baseline for the running totals.
         self.vib_samples.clear()
+        self.vib_counter_base = None if (isinstance(clients, list) and clients) else (0, 0)
         self.vib_listening = True
         helper.add_client(self._vib_cb)
         self.vib_mode = 'listening'
@@ -96,9 +108,17 @@ class DeepCalibrationApproach:
         # board's tilt drop out.
         give_up = self.reactor.monotonic() + timeout + max(0., t1 - self._print_time())
         while (not self.vib_samples or self.vib_samples[-1][0] < t1) and self.reactor.monotonic() < give_up:
+            self.vib_last_use = self.reactor.monotonic()     # keep the listener while waiting
             self.reactor.pause(self.reactor.monotonic() + .05)
+        self.vib_last_use = self.reactor.monotonic()
         rows = [r for r in self.vib_samples if t0 <= r[0] <= t1]
-        if len(rows) < 8:
+        # Only a fully covered window of valid, finite samples counts;
+        # anything else is unknown, never quiet (10.2.5)
+        span = t1 - t0
+        if (len(rows) < 8 or not all(len(r) < 5 or r[4] for r in rows)
+                or not all(math.isfinite(v) for r in rows for v in r[1:4])
+                or rows[0][0] - t0 > .1 * span + .01 or t1 - rows[-1][0] > .1 * span + .01
+                or any(b[0] - a[0] > .05 for a, b in zip(rows, rows[1:]))):
             return None
         total = 0.
         for axis in (1, 2, 3):
@@ -113,12 +133,15 @@ class DeepCalibrationApproach:
         began = self.reactor.monotonic()
         told = False
         while True:
+            self.vib_last_use = self.reactor.monotonic()
             t0 = self._print_time()
             level = self._vib_rms(t0, t0 + self.vib_window)
-            if level is None or level <= self.vib_limit:
+            if level is not None and level <= self.vib_limit:
                 return level, self.reactor.monotonic() - began
             if self.reactor.monotonic() - began >= self.vib_max_wait:
                 return level, self.reactor.monotonic() - began
+            if level is None:
+                continue                    # no usable data yet: measure again
             if not told:
                 told = True
                 self.vib_waited += 1
@@ -265,7 +288,9 @@ class DeepCalibrationApproach:
             self.vib_last_use = self.reactor.monotonic()
             during = self._vib_rms(t0, t1)
             shaken = during is not None and during > self.vib_limit
-            info = dict(x=round(pos[0], 3), y=round(pos[1], 3), homing=is_home,
+            unknown = before is None or during is None
+            quality = 'shaken' if shaken or (before is not None and before > self.vib_limit) else ('unknown' if unknown else 'quiet')
+            info = dict(x=round(pos[0], 3), y=round(pos[1], 3), homing=is_home, quality=quality,
                         z=round(toolhead.get_position()[2], 5),
                         vibration_before=None if before is None else round(before, 1),
                         vibration_during=None if during is None else round(during, 1),
@@ -285,12 +310,15 @@ class DeepCalibrationApproach:
                 goal[2] = start_z
                 toolhead.manual_move(goal, self.fast_speed)
                 continue
-            if shaken or (before is not None and before > self.vib_limit):
+            if quality != 'quiet':
+                # shaken, or no usable vibration data: never a clean touch
                 info['disturbed'] = True
                 self.vib_disturbed += 1
                 self.gcode.respond_info(
-                    'DEEP CALIBRATION: touch at %s measured while shaken (before %s, during %s mm/s2, limit %.0f); kept and marked'
-                    % (where, '-' if before is None else '%.0f' % before,
+                    'DEEP CALIBRATION: touch at %s measured ' % where
+                    + ('without usable vibration data' if quality == 'unknown' else 'while shaken')
+                    + ' (before %s, during %s mm/s2, limit %.0f); kept and marked'
+                    % ('-' if before is None else '%.0f' % before,
                        '-' if during is None else '%.0f' % during, self.vib_limit))
             self._record_touch(info)
             return
