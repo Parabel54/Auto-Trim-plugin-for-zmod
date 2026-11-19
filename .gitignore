@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+# copied in by the tests at run time
+addons/auto_trim_shape_mesh/tests/kextras/auto_trim_shape_mesh.py
