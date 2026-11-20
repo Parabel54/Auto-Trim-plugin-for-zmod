@@ -1,3 +1,9 @@
+# 0.1.0-beta.10.2.6 — 6 load cell readings per second while recording (2026-11-20)
+
+- `poll_rate` (default 6, 3.3-10): load cell readings per second while recording; driver pause 1/poll_rate - 0.10 s (0.067 s at 6/s). Was 10/s (pause 0). A 10.2.5 recording overloaded an AD5X at the first layer (Timer too close 2.7 s in; reactor stalls with _tick, G-code reader not running).
+- Knee search: with fast polling, the minimum step is about 20 readings (3.3 s at 6/s, 2 s at 10/s); was 2 s only at 8/s or more.
+- 375 software tests +37 subtests pass.
+
 # 0.1.0-beta.10.2.5 — review fixes and shape mesh timing (2026-11-19)
 
 - Accelerometer errors and overflows are native running totals: only increases count (baseline on joining a running stream); the acceleration file records per-batch increases. One overflow no longer stops a recording after four batches.

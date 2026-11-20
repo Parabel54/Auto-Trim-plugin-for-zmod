@@ -24,7 +24,8 @@ class Beta10PolicyTests(unittest.TestCase):
 
     def test_poll_start_and_restore_previous_not_hardcoded(self):
         self.start()
-        self.assertEqual(self.c.reader.poll_time, 0)
+        # 10.2.6: about 6 readings per second by default (pause 1/6 - 0.10)
+        self.assertAlmostEqual(self.c.reader.poll_time, .067, places=3)
         self.assertEqual(self.c.reader.poll_wait, .02)
         self.c.cmd_STOP(Command())
         self.assertEqual(self.c.reader.poll_time, .07)
@@ -35,6 +36,15 @@ class Beta10PolicyTests(unittest.TestCase):
         self.start()
         self.assertEqual(self.c.reader.poll_time, .07)
         self.assertIsNone(self.c.poll_saved)
+
+    def test_poll_rate_setting(self):
+        self.assertEqual(self.c.poll_rate, 6.)
+        self.c.poll_rate = 10.; self.c.poll_pause = 0.
+        self.start()
+        self.assertEqual(self.c.reader.poll_time, 0.)
+        ev = [r for r in self.f.records() if r.get('event') == 'poll_policy'] if hasattr(self.f, 'records') else []
+        self.c.cmd_STOP(Command())
+        self.assertEqual(self.c.reader.poll_time, .07)
 
     def test_poll_policy_opt_out(self):
         self.c.poll_accelerate = False
@@ -111,6 +121,16 @@ class Beta10PolicyTests(unittest.TestCase):
         self.assertIsInstance(self.c._knee_measure(2),tuple)
         self.c.knee.update(readings=[0]*5,ref=None)
         self.assertEqual(self.c._knee_measure(2),'wait')
+
+    def test_fast_hold_scales_with_the_rate(self):
+        # 10.2.6: about 20 readings per step: 2 s at 10/s, 3.3 s at 6/s
+        self.c.poll_saved=(self.c.reader,.07)
+        self.c.knee=dict(cfg=dict(self.c.knee_cfg),phase='down',readings=[0]*18,window=[0,20],ref=None)
+        self.assertEqual(self.c._knee_measure(3),'wait')               # 6/s: 3 s is not yet 20 readings
+        self.c.knee.update(readings=[0]*21,ref=None)
+        self.assertIsInstance(self.c._knee_measure(3.5),tuple)         # 6/s after 3.5 s: done
+        self.c.knee.update(readings=[0]*10,ref=None)
+        self.assertEqual(self.c._knee_measure(3),'wait')                # 3.3/s is not fast polling
 
     def test_bad_explicit_margins_rejected_before_motion(self):
         for v in ['nan','inf','-0.01','.31']:

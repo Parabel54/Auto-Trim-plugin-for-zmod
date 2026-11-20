@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.2.5 (2026-11-19). **Current official development continuation of beta 9.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
+Version 0.1.0-beta.10.2.6 (2026-11-20). **Current official development continuation of beta 9.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
 
 ## Contents
 
@@ -188,6 +188,19 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 **By hand:** `DEEP_CALIBRATION_MARK LABEL=<label> NOTE="..."` during a recording. Labels: `GOOD`, `TOO_HIGH`, `TOO_LOW`, `TRAVEL`, `TRANSITION` and `UNLABELLED`. `DC_MARK_GOOD` is a shortcut for `GOOD`, handy as a screen button. A label you set by hand after the last babystep is kept: the automatic `GOOD` at layer 2 does not replace it.
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
+
+## Beta 10.2.6: 6 load cell readings per second while recording
+
+Current continuation: **0.1.0-beta.10.2.6**. Replace the full folder, rerun the installer and reboot while idle.
+
+On the AD5X, a 10.2.5 recording shut the printer down with `Timer too close` 2.7 s into the first layer: from the recording start Klipper's reactor was blocked for 0.15–0.47 s every few tenths of a second, each time with Deep Calibration's `_tick`, while the G-code context reader was not running (no soak, so the file was not read). The recording's own load at the first layer (10 load cell readings per second, the context, the acceleration stream, the writer threads competing through the GIL) was more than the printer could keep up with.
+
+- **`poll_rate`** (new, default **6**): load cell readings per second while recording, 3.3–10. The driver pause is set to `1/poll_rate - 0.10` s (each reading takes about 0.10 s plus the pause: pause 0 measured 9.8/s, 0.02 measured 7.9/s, 0.2 measured 3.3/s); at 6/s that is 0.067 s. The board converts every 0.1 s, so the rate averages out near the target. The `poll_policy` event records the target and the pause.
+- **Knee search steps:** with fast polling, the minimum step is the time for about 20 readings (3.3 s at 6/s, 2 s at 10/s, never below `knee_fast_hold`); its precision check is unchanged. It used to need 8 readings per second for the short steps.
+
+Whether 6/s is light enough is the next print's question: if the first layer still stalls, `context_interval` and the acceleration stream are the next settings to try (see the logs' `Reactor ... busy` lines).
+
+Software tests: 375 pass with 37 subtests.
 
 ## Beta 10.2.5: review fixes and shape mesh timing
 

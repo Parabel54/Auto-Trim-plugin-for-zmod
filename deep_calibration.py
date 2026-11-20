@@ -22,7 +22,7 @@ except ImportError:
     from deep_calibration_mesh import DeepCalibrationMesh
     from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.2.5'
+VERSION = '0.1.0-beta.10.2.6'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -192,6 +192,13 @@ class DeepCalibration:
         # where the nozzle starts pressing the line, then backs off by a margin.
         self.poll_saved = None
         self.poll_accelerate = config.getboolean('poll_accelerate', True)
+        # Load cell readings per second while recording (10.2.6). Each reading
+        # takes about 0.10 s plus the driver's pause (measured: pause 0 gave
+        # 9.8/s, 0.02 gave 7.9/s, 0.2 gave 3.3/s), so the pause is
+        # 1/poll_rate - 0.10. At 10/s the recording overloaded an AD5X at the
+        # first layer; 6/s is the default.
+        self.poll_rate = config.getfloat('poll_rate', 6., minval=3.3, maxval=10.)
+        self.poll_pause = max(0., round(1. / self.poll_rate - .10, 3))
         self.knee_require_margin = config.getboolean('knee_require_margin', True)
         self.knee_cfg = dict(
             start=config.getfloat('knee_start', .10, minval=0., maxval=.5),
@@ -362,9 +369,10 @@ class DeepCalibration:
         old = getattr(self.reader, 'poll_time', None)
         if not finite(old) or old < 0:
             return
+        pause = getattr(self, 'poll_pause', 0.)
         self.poll_saved = (self.reader, old)
-        self.reader.poll_time = 0.
-        self._event('poll_policy', pause=0., previous_pause=old,
+        self.reader.poll_time = pause
+        self._event('poll_policy', pause=pause, previous_pause=old, target_rate=getattr(self, 'poll_rate', 10.),
                     wait=getattr(self.reader, 'poll_wait', .05), measured_board_ceiling_hz=10.)
 
     def _poll_restore(self):
@@ -925,8 +933,11 @@ class DeepCalibration:
         hold = k['cfg']['hold']
         if k['phase'] == 'up':
             hold = max(hold, k['cfg']['up_hold'])
-        elif self.poll_saved is not None and elapsed > 0 and n / elapsed >= 8.:
-            hold = min(hold, k['cfg']['fast_hold'])
+        elif self.poll_saved is not None and elapsed > 0 and n / elapsed >= 5.:
+            # Fast polling: the minimum step is the time for about 20
+            # readings (2 s at 10/s, 3.3 s at 6/s), never below knee_fast_hold;
+            # the precision check below still decides when the step is done
+            hold = min(hold, max(k['cfg']['fast_hold'], 20. / (n / elapsed)))
         hold_max = max(k['cfg']['hold_max'], hold)
         if self.slicer.enabled and k.get('eligible_duration', 0.) < hold:
             return 'skip' if now >= w0 + hold_max else 'wait'
