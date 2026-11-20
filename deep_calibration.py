@@ -22,7 +22,7 @@ except ImportError:
     from deep_calibration_mesh import DeepCalibrationMesh
     from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.3'
+VERSION = '0.1.0-beta.10.3.1'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -139,8 +139,20 @@ class JsonWriter:
                 self.error = 'writer close failure: '+str(exc)
 
 
+# Load guard levels (10.3.1): each records less, nothing is stopped and the
+# recording never ends because of load. Context tick interval per level
+# (acceleration and ADC thinning per level: deep_calibration_sensors).
+GUARD_MAX_LEVEL = 6
+GUARD_TICK_INTERVAL = (0., .2, .2, .5, .5, .5, 1.)
+GUARD_LEVEL_TEXT = ('full recording', 'printer state every 0.2 s', 'acceleration every 2nd sample',
+                    'printer state every 0.5 s', 'acceleration every 4th sample',
+                    'load cell at the native pace, ADC every 2nd report',
+                    'acceleration every 8th sample, printer state every 1 s, ADC every 4th report')
+
+
 class RecordingLoadGuard:
-    """Shed one tier at a time, restore one tier after sustained headroom."""
+    """Record less one level at a time; record more one level at a time after
+    sustained headroom. Never stops a stream or the recording."""
     def __init__(self, enabled):
         self.enabled = enabled
         self.reset()
@@ -157,9 +169,9 @@ class RecordingLoadGuard:
         if self.lag > max(.075, .65 * interval) or self.work > .05 or pressure >= .25:
             self.quiet_since = None
             self.bad += 1
-            if self.bad >= (4 if self.level == 3 else 2):
+            if self.bad >= (2 if self.level < 3 else 3):
                 self.bad = 0
-                return min(4, self.level + 1)
+                return min(GUARD_MAX_LEVEL, self.level + 1)
         else:
             self.bad = 0
             if self.lag < .025 and self.work < .03 and pressure < .10:
@@ -432,27 +444,28 @@ class DeepCalibration:
             return
         queues = (getattr(self.writer, 'queue', None), getattr(self.sensors.writer, 'queue', None))
         pressure = max((q.qsize() / q.maxsize for q in queues if q is not None and q.maxsize), default=0.)
-        interval = max(self.interval, .3) if guard.level >= 2 else self.interval
-        level = guard.update(now, interval, pressure)
+        level = guard.update(now, self._tick_interval(), pressure)
         if level == guard.level:
             return
         old, guard.level = guard.level, level
         self._event('recording_load_guard', previous_level=old, level=level,
                     timer_lag_s=guard.lag, previous_tick_work_s=guard.work, queue_pressure=pressure)
-        self.gcode.respond_info('DEEP CALIBRATION: recording load guard level %d (was %d)' % (level, old))
+        self.gcode.respond_info('DEEP CALIBRATION: recording load guard level %d (was %d): %s'
+                                % (level, old, GUARD_LEVEL_TEXT[level]))
         if not self.active:
             return
-        if level >= 3:
+        # The load cell goes back to the driver's own pace from level 5 and
+        # to the recording's pace below it; the knee search continues (its
+        # steps lengthen with the slower rate)
+        if level >= 5 > old:
             self._poll_restore()
-            if self.knee is not None:
-                context = {'gcode': self._status('gcode_move', now)}
-                self._knee_stop(now, context, 'recording load guard', restore=True)
-        elif old >= 3:
+        elif old >= 5 > level:
             self._poll_begin()
-        if level == 4:
-            self._end('recording_load_guard', flush=False)
-        else:
-            self.sensors.set_load_level(level)
+        self.sensors.set_load_level(level)
+
+    def _tick_interval(self):
+        level = self.load_guard.level if self.active else 0
+        return max(self.interval, GUARD_TICK_INTERVAL[min(level, GUARD_MAX_LEVEL)])
 
     def _shutdown(self):
         self.slicer.stop()
@@ -673,7 +686,7 @@ class DeepCalibration:
                 self._end('capture_error')
                 self.gcode.respond_info('DEEP CALIBRATION: capture stopped: '+str(exc))
         self.load_guard.work = max(0., self.reactor.monotonic() - began)
-        interval = max(self.interval, .3) if self.active and self.load_guard.level >= 2 else self.interval
+        interval = self._tick_interval()
         self.load_guard.due = now + interval
         return self.load_guard.due
 

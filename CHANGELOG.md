@@ -1,3 +1,9 @@
+# 0.1.0-beta.10.3.1 — load guard records less, never stops (2026-11-20)
+
+- Load guard: six levels that thin the recording (printer state 0.2/0.5/1 s; acceleration every 2nd/4th/8th frame of every batch; load cell at the native pace and ADC every 2nd/4th report from level 5). No stream is detached, the knee search is not stopped and the recording never ends because of load; level 6 holds under sustained load. Recovery one level per 5 s of headroom.
+- Acceleration batches store their thinning factor (`<IdIIH`); older files still read. Analysis accounts for thinning, keeps thinned stretches out of the vibration windows, and accepts thinned recordings.
+- 368 software tests +37 subtests pass.
+
 # 0.1.0-beta.10.3 — recording load and native motion history
 
 - Buffer compact command observations only while recording with a loaded slicer snapshot. Match native motion phases in batches from Klipper's trap queue and exclude unknown or ambiguous attribution from knee fitting.

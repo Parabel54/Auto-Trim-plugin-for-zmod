@@ -189,6 +189,25 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
 
+## Beta 10.3.1: the load guard records less, never stops
+
+Current continuation: **0.1.0-beta.10.3.1**. Replace the full folder, rerun the installer and reboot while idle.
+
+10.3's first recording on the AD5X ran the whole first layer (386 s, about 4.8 load cell readings per second, one accelerometer overflow kept as a gap) with the load guard never above level 0. 10.3.1 changes how the guard reacts when it is needed: it reduces how much is recorded, one level at a time, and never stops a stream, never stops the knee search and never ends the recording.
+
+| Level | Recorded less |
+|---|---|
+| 1 | Printer state every 0.2 s |
+| 2 | Acceleration every 2nd frame (800 per second), every batch kept |
+| 3 | Printer state every 0.5 s |
+| 4 | Acceleration every 4th frame |
+| 5 | Load cell at the driver's own pace; ADC every 2nd report |
+| 6 | Acceleration every 8th frame, printer state every 1 s, ADC every 4th report; stays here under sustained load |
+
+One level up after two late ticks (three from level 3), one level down after 5 s of headroom, as in 10.3. Each change is a `recording_load_guard` event with its description. The knee search continues at every level; at level 5 its steps lengthen with the slower load cell.
+
+- **Acceleration file format:** each batch now stores its thinning factor (`batch_format` `<IdIIH`); files from earlier betas still read. The analysis checks spacing and frame count against the factor, keeps thinned stretches out of the 1600 Hz vibration windows, and no longer marks a thinned recording invalid. 10.3's dropped or suspended batches still count as holes.
+- Software tests: 368 pass with 37 subtests (the guard tests rewritten for the new rules; an older-format file test added).
 ## Beta 10.3: recording load guard and native motion history
 
 The slicer snapshot and live recipe matching remain active. During recording with a ready snapshot, the motion command wrapper stores the virtual SD file position, command parameters and compact native coordinate checkpoints. Parameter matching and native trapezoid timing are resolved in the recorder tick. A tick reads the native toolhead history once for its recent force receipts. Separate motion phases can match the same indexed line when bed mesh splits the move. Missing history, overlapping candidates, unsupported motion or disagreeing native checkpoints leave the force sample unattributed and ineligible for knee fitting.

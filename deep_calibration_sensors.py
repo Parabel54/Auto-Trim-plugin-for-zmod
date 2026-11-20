@@ -12,7 +12,12 @@ import time
 
 MAGIC = b'DCA2'
 FRAME = struct.Struct('<dddd')  # native print timestamp, mapped XYZ mm/s^2
-BATCH = struct.Struct('<IdII')  # frame count, host receipt, errors, overflows
+BATCH = struct.Struct('<IdII')  # frame count, host receipt, errors, overflows (batch_format <IdII)
+BATCH2 = struct.Struct('<IdIIH')  # ... plus thinning factor: every Nth native frame kept (10.3.1)
+# Load guard thinning per level (10.3.1): acceleration keeps every Nth frame,
+# ADC keeps every Nth report. Streams are never stopped.
+ACCEL_THINNING = (1, 1, 2, 2, 4, 4, 8)
+ADC_THINNING = (1, 1, 1, 1, 1, 2, 4)
 
 
 def numeric(value):
@@ -44,7 +49,7 @@ class AccelerationWriter:
             self.stream.flush();self.stream.close();self.stream=None
         path=self.prefix+'.%04d.dca'%len(self.paths)
         header=json.dumps(dict(self.metadata,part=len(self.paths),format='<dddd',
-                               batch_format='<IdII',units='mm/s^2',
+                               batch_format='<IdIIH',units='mm/s^2',
                                representation='native_mapped_scaled_float64_not_ADC_integers'),
                           separators=(',',':'),allow_nan=False).encode()
         content=MAGIC+struct.pack('<I',len(header))+header
@@ -56,13 +61,13 @@ class AccelerationWriter:
         self.stream=stream;self.paths.append(path)
         self.file_bytes=len(content);self.bytes+=len(content)
 
-    def put(self, samples, received, errors=0, overflows=0):
+    def put(self, samples, received, errors=0, overflows=0, thinning=1):
         if self.error or self.stop_event.is_set(): return False
         try:
             # Source reuses/mutates its batch containers. Take a bounded copy;
             # packing and disk operations stay in this background worker.
             if len(samples)>4096: raise ValueError('oversized native acceleration batch')
-            packet=(tuple(tuple(row) for row in samples),received,int(errors),int(overflows))
+            packet=(tuple(tuple(row) for row in samples),received,int(errors),int(overflows),int(thinning))
             self.queue.put_nowait(packet)
             return True
         except Exception as exc:
@@ -74,12 +79,12 @@ class AccelerationWriter:
     def _run(self):
         try:
             while not self.stop_event.is_set() or not self.queue.empty():
-                try: rows,received,errors,overflows=self.queue.get(timeout=.2)
+                try: rows,received,errors,overflows,thinning=self.queue.get(timeout=.2)
                 except queue.Empty:
                     self.stream.flush();continue
                 if not rows: continue
-                if not numeric(received) or errors<0 or overflows<0: raise ValueError('invalid batch metadata')
-                data=bytearray(BATCH.pack(len(rows),received,errors,overflows))
+                if not numeric(received) or errors<0 or overflows<0 or not 1<=thinning<=64: raise ValueError('invalid batch metadata')
+                data=bytearray(BATCH2.pack(len(rows),received,errors,overflows,thinning))
                 for row in rows:
                     if len(row)!=4 or not all(numeric(v) for v in row): raise ValueError('invalid acceleration frame')
                     if self.last_timestamp is not None and row[0]<=self.last_timestamp:
@@ -120,11 +125,16 @@ def read_acceleration(paths):
             if identity is None:identity=meta.get('session')
             elif meta.get('session')!=identity:raise ValueError('mixed acceleration sessions')
             expected_part+=1
+            # 10.3.1 files carry a thinning factor per batch; older files do not
+            layout=BATCH2 if meta.get('batch_format')=='<IdIIH' else BATCH
+            if meta.get('batch_format') not in ('<IdII','<IdIIH',None):raise ValueError('unknown acceleration batch format')
             while True:
-                head=stream.read(BATCH.size)
+                head=stream.read(layout.size)
                 if not head:break
-                if len(head)!=BATCH.size:raise ValueError('truncated acceleration batch')
-                n,received,errors,overflows=BATCH.unpack(head)
+                if len(head)!=layout.size:raise ValueError('truncated acceleration batch')
+                if layout is BATCH2:n,received,errors,overflows,thinning=layout.unpack(head)
+                else:(n,received,errors,overflows),thinning=layout.unpack(head),1
+                if not 1<=thinning<=64:raise ValueError('invalid acceleration thinning')
                 if not 1<=n<=4096 or not numeric(received):raise ValueError('invalid acceleration batch')
                 for i in range(n):
                     blob=stream.read(FRAME.size)
@@ -134,7 +144,7 @@ def read_acceleration(paths):
                     if previous is not None and row[0]<=previous:raise ValueError('non-increasing acceleration time')
                     previous=row[0]
                     yield dict(t=row[0],x=row[1],y=row[2],z=row[3],host_received=received,
-                               errors=errors,overflows=overflows)
+                               errors=errors,overflows=overflows,thinning=thinning)
 
 
 class SensorExtension:
@@ -173,6 +183,7 @@ class SensorExtension:
         self.stopping=False
         self.callback=self._batch
         self.load_level = self.thinned_batches = self.thinned_frames = self.thinned_adc = self.accel_suspensions = 0
+        self.adc_seen = {}
 
     def configure(self,gcmd):
         flags=[]
@@ -191,6 +202,7 @@ class SensorExtension:
         self.overflow_times=[];self.overflows_total=0
         self.joined_running=False;self.counter_base=None
         self.load_level = self.thinned_batches = self.thinned_frames = self.thinned_adc = self.accel_suspensions = 0
+        self.adc_seen = {}
         if self.accel_enabled:
             chip=self.printer.lookup_object(self.accel_name,None)
             self.helper=getattr(chip,'batch_bulk',None)
@@ -269,11 +281,13 @@ class SensorExtension:
             if rows:
                 self.last_batch_time=self.reactor.monotonic()
                 self.batches_received+=1;self.frames_received+=len(rows)
-                if self.load_level == 1 and self.batches_received % 2 == 0 and not overflows:
-                    self.thinned_batches += 1
-                    self.thinned_frames += len(rows)
-                    return True
-                if not self.writer.put(rows,self.reactor.monotonic(),errors,overflows):
+                # Under load keep every Nth frame of every batch: the stream
+                # stays continuous at a lower rate, and the batch says so
+                factor=ACCEL_THINNING[min(self.load_level,len(ACCEL_THINNING)-1)]
+                if factor>1:
+                    kept=rows[::factor]
+                    self.thinned_batches+=1;self.thinned_frames+=len(rows)-len(kept);rows=kept
+                if not self.writer.put(rows,self.reactor.monotonic(),errors,overflows,factor):
                     self.error=self.writer.error or 'acceleration writer stopped';return False
             return True
         except Exception as exc:
@@ -284,7 +298,7 @@ class SensorExtension:
     def tick(self,now):
         if not self.owner.active or self.starting:return
         if self.writer and self.writer.error:self.error=self.writer.error
-        if self.accel_enabled and self.load_level < 2 and now-(self.last_batch_time if self.last_batch_time is not None else self.begin)>2.:
+        if self.accel_enabled and now-(self.last_batch_time if self.last_batch_time is not None else self.begin)>2.:
             self.error=self.error or 'acceleration stream stale or absent for more than 2 s'
         if self.error:raise RuntimeError(self.error)
         if self.adc_enabled:self._drain_adc(now)
@@ -313,9 +327,12 @@ class SensorExtension:
             self.adc_last[name]=stamp;self.adc_received[name]=received
             if name in self.adc_lost:
                 self.adc_lost.discard(name);self._adc_anomaly(name,'channel_resumed',received=received)
-            if self.load_level >= 3:
-                self.thinned_adc += 1
-                continue
+            factor=ADC_THINNING[min(self.load_level,len(ADC_THINNING)-1)]
+            if factor>1:
+                self.adc_seen[name]=self.adc_seen.get(name,0)+1
+                if self.adc_seen[name]%factor:
+                    self.thinned_adc += 1
+                    continue
             accepted=self.owner._write(dict(type='adc',channel=name,t=received,print_time=stamp,
                                    normalized_value=value,age=age,callback_format=self.adc_format,
                                    representation='native_normalized_aggregate_not_individual_conversions'))
@@ -389,14 +406,9 @@ class SensorExtension:
                 self.attached=False
 
     def set_load_level(self, level):
-        old, self.load_level = self.load_level, level
-        if not self.accel_enabled:
-            return
-        if old < 2 <= level:
-            self.accel_suspensions += 1
-            self._detach_accel()
-        elif level < 2 <= old:
-            self._attach_accel()
+        # 10.3.1: streams stay attached at every level; only how much of
+        # them is recorded changes (thinning in the callbacks)
+        self.load_level = level
 
     def status(self):
         return dict(acceleration=self.accel_enabled,adc=self.adc_enabled,adc_channels=list(self.channels),
@@ -408,7 +420,9 @@ class SensorExtension:
                     thinned_acceleration_frames=self.thinned_frames,
                     thinned_adc_reports=self.thinned_adc,
                     acceleration_suspensions=self.accel_suspensions,
-                    acceleration_suspended=self.accel_enabled and self.load_level >= 2,
+                    acceleration_suspended=False,
+                    acceleration_thinning=ACCEL_THINNING[min(self.load_level,len(ACCEL_THINNING)-1)],
+                    adc_thinning=ADC_THINNING[min(self.load_level,len(ADC_THINNING)-1)],
                     batches_received=self.batches_received,frames_received=self.frames_received,
                     callback_max_seconds=self.callback_max_seconds,
                     last_batch_host_time=self.last_batch_time,

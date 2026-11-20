@@ -46,7 +46,7 @@ def analyze_vibration(run, output, window=.25):
     if not parts:return dict(status='missing_acceleration_files',valid=False)
     freqs=sorted({float(axis['shaper_freq']) for axis in metadata.get('shaper',{}).values()
                   if axis.get('shaper_freq') is not None and float(axis['shaper_freq'])>0})
-    state=dict(count=0,first=None,last=None,gaps=0,max_gap=0.,driver_errors=0,driver_overflows=0)
+    state=dict(count=0,first=None,last=None,gaps=0,max_gap=0.,driver_errors=0,driver_overflows=0,thinned_frames_kept=0)
     buffer=collections.deque(maxlen=8192)
     source=iter(read_acceleration(parts));pending=None
     def advance():
@@ -56,9 +56,11 @@ def analyze_vibration(run, output, window=.25):
         t=pending['t']
         if state['last'] is not None:
             dt=t-state['last'];state['max_gap']=max(state['max_gap'],dt)
-            if dt>1.5/1600.:state['gaps']+=1
+            # 10.3.1: a thinned batch keeps every Nth frame, so its spacing is N/1600
+            if dt>1.5*pending.get('thinning',1)/1600.:state['gaps']+=1
         state['first']=state['first'] if state['first'] is not None else t
         state['last']=t;state['count']+=1
+        if pending.get('thinning',1)>1:state['thinned_frames_kept']+=1
         state['driver_errors']=max(state['driver_errors'],pending['errors'])
         state['driver_overflows']=max(state['driver_overflows'],pending['overflows'])
     target=Path(output)/(path.stem+'.vibration.csv')
@@ -83,6 +85,9 @@ def analyze_vibration(run, output, window=.25):
                 if (result is None or result['span_s']<window*.9
                         or clock-selected[-1]['t']>.005
                         or any(b['t']-a['t']>1.5/1600. for a,b in zip(selected,selected[1:]))
+                        # the vibration measures assume 1600 Hz: thinned
+                        # stretches stay in the file but out of the windows
+                        or any(r.get('thinning',1)>1 for r in selected)
                         # 10.2.5: lost conversions need not leave a timestamp
                         # gap; a window touching a batch marked by the driver
                         # (errors or overflows) is excluded too
@@ -100,12 +105,18 @@ def analyze_vibration(run, output, window=.25):
                     partial_csv=str(target),**state)
     end=next((e for e in reversed(run['events']) if e.get('event')=='session_end'),{})
     final=end.get('sensor_capture',{})
-    expected=final.get('frames_received')
     thinned = final.get('thinned_acceleration_frames', 0)
     suspended = final.get('acceleration_suspensions', 0)
+    # 10.3.1 records every batch, thinned ones at a lower rate: the file holds
+    # what was received minus the frames thinned out. 10.3 dropped or
+    # suspended batches, which leaves holes: those stay invalid.
+    thinning_kept = bool(final.get('acceleration_thinning') is not None or state['thinned_frames_kept'])
+    expected=final.get('frames_received')
+    if thinning_kept and expected is not None:
+        expected=expected-thinned
     valid=(run['complete'] and expected==state['count'] and state['count']>0 and not state['gaps']
            and not state['driver_errors'] and not state['driver_overflows']
-           and not thinned and not suspended
+           and (not thinned or thinning_kept) and not suspended
            and not final.get('error') and not final.get('acceleration_writer_error'))
     return dict(status='complete' if valid else 'incomplete_or_gapped',valid=valid,files=[str(p) for p in parts],
                 expected_frames=expected, matched_force_intervals=matched, unmatched_force_intervals=unmatched,
