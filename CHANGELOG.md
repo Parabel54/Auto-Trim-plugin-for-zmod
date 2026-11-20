@@ -1,3 +1,8 @@
+# 0.1.0-beta.10.3.2 — slicer data kept out of garbage collection (2026-11-20)
+
+- `gc.freeze()` once the G-code context is loaded: a full garbage collection over the parsed file (about 0.5 s on an AD5X) shut a print down with Timer too close during the shape mesh after a soak-time read of a 5.8 MB file. Status reports `gc_frozen_objects`.
+- 370 software tests +37 subtests pass.
+
 # 0.1.0-beta.10.3.1 — load guard records less, never stops (2026-11-20)
 
 - Load guard: six levels that thin the recording (printer state 0.2/0.5/1 s; acceleration every 2nd/4th/8th frame of every batch; load cell at the native pace and ADC every 2nd/4th report from level 5). No stream is detached, the knee search is not stopped and the recording never ends because of load; level 6 holds under sustained load. Recovery one level per 5 s of headroom.

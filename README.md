@@ -189,6 +189,16 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
 
+## Beta 10.3.2: slicer data kept out of garbage collection
+
+Current continuation: **0.1.0-beta.10.3.2**. Replace the full folder, rerun the installer and reboot while idle.
+
+On the AD5X, a print with `SOAK=AUTO` read its 5.8 MB G-code file during the soak (17.7 s, as designed), then shut down with `Timer too close` four minutes into the shape mesh. Klipper's log shows zMod's garbage collector starting a full collection (estimated at 0.5 s) 0.1 s before the shutdown, with no other large stall. The parsed file is millions of small Python objects kept for the whole print, and a full collection walks them all. The previous print, without a soak, did not read the file and ran through, first layer recording included.
+
+Now, as soon as the slicer data is loaded (during the soak, while the printer only waits), `gc.freeze()` moves everything alive into Python's permanent generation, which garbage collections skip. Memory is still freed by reference counting when the data is released. `DEEP_CALIBRATION_STATUS` shows the number of frozen objects (`gc_frozen_objects`).
+
+Software tests: 370 pass with 37 subtests (2 new).
+
 ## Beta 10.3.1: the load guard records less, never stops
 
 Current continuation: **0.1.0-beta.10.3.1**. Replace the full folder, rerun the installer and reboot while idle.

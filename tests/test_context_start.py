@@ -107,6 +107,21 @@ class ContextStartTests(unittest.TestCase):
         self.source.enabled = False; self.source.start_policy = 'soak'; self.announce(SOAK)
         self.assertIsNone(self.source.worker)
 
+    def test_loaded_slicer_data_is_frozen_out_of_garbage_collection(self):
+        # 10.3.2: a full collection over the parsed file shut a print down
+        import gc
+        from unittest import mock
+        with mock.patch.object(gc, 'freeze') as freeze:
+            self.source.poll(); self.announce(SOAK); self.finish()
+        self.assertEqual(self.source.state, 'ready')
+        freeze.assert_called_once()
+
+    def test_parsed_file_survives_freezing_for_real(self):
+        import gc
+        self.source.poll(); self.announce(SOAK); self.finish()
+        self.assertEqual(self.source.state, 'ready'); self.assertGreater(gc.get_freeze_count(), 0)
+        gc.unfreeze()
+
     def test_status_reports_the_policy(self):
         self.assertEqual(self.source.status()['start_policy'], 'soak')
 

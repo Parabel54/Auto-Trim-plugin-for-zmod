@@ -22,7 +22,7 @@ except ImportError:
     from deep_calibration_mesh import DeepCalibrationMesh
     from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.3.1'
+VERSION = '0.1.0-beta.10.3.2'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 

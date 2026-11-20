@@ -4,6 +4,7 @@ GPL-3.0-only. No G-code is executed by the parser. A separate file handle and
 worker thread are used; virtual_sdcard's cursor is never read or changed here.
 """
 import collections
+import gc
 import hashlib
 import itertools
 import json
@@ -589,6 +590,17 @@ class GcodeContext:
         if pending and pending[0] == self.generation:
             self.snapshot, self.error = pending[1:]
             self.state = 'ready' if self.snapshot else 'error'
+            if self.snapshot:
+                # 10.3.2: the parsed file is millions of small objects kept
+                # for the whole print. A full garbage collection walked them
+                # all (about 0.5 s on an AD5X) and a print shut down with
+                # "Timer too close" in the middle of the mesh. Freezing moves
+                # everything alive now into the permanent generation, which
+                # collections skip; memory is still freed by reference counts.
+                freeze = getattr(gc, 'freeze', None)
+                if callable(freeze):
+                    freeze()
+                    self.frozen = getattr(gc, 'get_freeze_count', lambda: None)()
             if self.snapshot and getattr(self, 'read_seconds', None) is not None:
                 # How long the read took on this printer: it must fit in the soak
                 self.owner.gcode.respond_info('DEEP CALIBRATION: G-code context read in %.1f s (%d bytes)'
@@ -802,7 +814,7 @@ class GcodeContext:
     def status(self):
         s = self.snapshot or {}
         return dict(enabled=self.enabled, state=self.state, error=self.error,
-                    start_policy=self.start_policy,
+                    start_policy=self.start_policy, gc_frozen_objects=getattr(self, 'frozen', None),
                     file_sha256=s.get('file_sha256'), physics_sha256=s.get('physics_sha256'),
                     setting_count=len(s.get('settings', {})), indexed_commands=len(s.get('segments', {})),
                     issues=s.get('issues', []), timing_observer_installed=bool(self.handlers),
