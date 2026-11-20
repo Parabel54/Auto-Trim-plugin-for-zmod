@@ -24,9 +24,9 @@ class Beta10PolicyTests(unittest.TestCase):
 
     def test_poll_start_and_restore_previous_not_hardcoded(self):
         self.start()
-        # 10.2.6: about 6 readings per second by default (pause 1/6 - 0.10)
-        self.assertAlmostEqual(self.c.reader.poll_time, .067, places=3)
-        self.assertEqual(self.c.reader.poll_wait, .02)
+        # 10.2.7: pause 0.1 s and wait 0.05 s while recording, both restored
+        self.assertAlmostEqual(self.c.reader.poll_time, .1, places=6)
+        self.assertAlmostEqual(self.c.reader.poll_wait, .05, places=6)
         self.c.cmd_STOP(Command())
         self.assertEqual(self.c.reader.poll_time, .07)
         self.assertEqual(self.c.reader.poll_wait, .02)
@@ -37,11 +37,11 @@ class Beta10PolicyTests(unittest.TestCase):
         self.assertEqual(self.c.reader.poll_time, .07)
         self.assertIsNone(self.c.poll_saved)
 
-    def test_poll_rate_setting(self):
-        self.assertEqual(self.c.poll_rate, 6.)
-        self.c.poll_rate = 10.; self.c.poll_pause = 0.
+    def test_poll_pause_and_wait_settings(self):
+        self.assertEqual((self.c.poll_pause, self.c.poll_wait), (.1, .05))
+        self.c.poll_pause = 0.; self.c.poll_wait = 0.
         self.start()
-        self.assertEqual(self.c.reader.poll_time, 0.)
+        self.assertEqual((self.c.reader.poll_time, self.c.reader.poll_wait), (0., 0.))
         ev = [r for r in self.f.records() if r.get('event') == 'poll_policy'] if hasattr(self.f, 'records') else []
         self.c.cmd_STOP(Command())
         self.assertEqual(self.c.reader.poll_time, .07)

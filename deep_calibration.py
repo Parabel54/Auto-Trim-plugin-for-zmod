@@ -22,7 +22,7 @@ except ImportError:
     from deep_calibration_mesh import DeepCalibrationMesh
     from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.2.6'
+VERSION = '0.1.0-beta.10.2.7'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -192,13 +192,12 @@ class DeepCalibration:
         # where the nozzle starts pressing the line, then backs off by a margin.
         self.poll_saved = None
         self.poll_accelerate = config.getboolean('poll_accelerate', True)
-        # Load cell readings per second while recording (10.2.6). Each reading
-        # takes about 0.10 s plus the driver's pause (measured: pause 0 gave
-        # 9.8/s, 0.02 gave 7.9/s, 0.2 gave 3.3/s), so the pause is
-        # 1/poll_rate - 0.10. At 10/s the recording overloaded an AD5X at the
-        # first layer; 6/s is the default.
-        self.poll_rate = config.getfloat('poll_rate', 6., minval=3.3, maxval=10.)
-        self.poll_pause = max(0., round(1. / self.poll_rate - .10, 3))
+        # The load cell driver's pause after each reading and wait for each
+        # reply while recording (10.2.7; restored afterwards). Each reading
+        # takes about 0.10 s plus the pause (measured: pause 0 gave 9.8/s,
+        # 0.02 gave 7.9/s, 0.2 gave 3.3/s): 0.1 s gives about 5 per second.
+        self.poll_pause = config.getfloat('poll_pause', .1, minval=0., maxval=1.)
+        self.poll_wait = config.getfloat('poll_wait', .05, minval=0., maxval=.5)
         self.knee_require_margin = config.getboolean('knee_require_margin', True)
         self.knee_cfg = dict(
             start=config.getfloat('knee_start', .10, minval=0., maxval=.5),
@@ -369,16 +368,22 @@ class DeepCalibration:
         old = getattr(self.reader, 'poll_time', None)
         if not finite(old) or old < 0:
             return
-        pause = getattr(self, 'poll_pause', 0.)
-        self.poll_saved = (self.reader, old)
+        pause = getattr(self, 'poll_pause', .1)
+        old_wait = getattr(self.reader, 'poll_wait', None)
+        wait = getattr(self, 'poll_wait', .05)
+        self.poll_saved = (self.reader, old, old_wait)
         self.reader.poll_time = pause
-        self._event('poll_policy', pause=pause, previous_pause=old, target_rate=getattr(self, 'poll_rate', 10.),
-                    wait=getattr(self.reader, 'poll_wait', .05), measured_board_ceiling_hz=10.)
+        if finite(old_wait):
+            self.reader.poll_wait = wait            # only on the patched driver that has it
+        self._event('poll_policy', pause=pause, previous_pause=old,
+                    wait=wait if finite(old_wait) else None, previous_wait=old_wait, measured_board_ceiling_hz=10.)
 
     def _poll_restore(self):
         saved = self.poll_saved
         if saved is not None:
             saved[0].poll_time = saved[1]
+            if len(saved) > 2 and finite(saved[2]):
+                saved[0].poll_wait = saved[2]
             self.poll_saved = None
 
     def _shutdown(self):

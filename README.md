@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.2.6 (2026-11-20). **Current official development continuation of beta 9.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
+Version 0.1.0-beta.10.2.7 (2026-11-20). **Current official development continuation of beta 9.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
 
 ## Contents
 
@@ -188,6 +188,18 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 **By hand:** `DEEP_CALIBRATION_MARK LABEL=<label> NOTE="..."` during a recording. Labels: `GOOD`, `TOO_HIGH`, `TOO_LOW`, `TRAVEL`, `TRANSITION` and `UNLABELLED`. `DC_MARK_GOOD` is a shortcut for `GOOD`, handy as a screen button. A label you set by hand after the last babystep is kept: the automatic `GOOD` at layer 2 does not replace it.
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
+
+## Beta 10.2.7: lighter first layer, vibration gate removed
+
+Current continuation: **0.1.0-beta.10.2.7**. Replace the full folder, rerun the installer and reboot while idle.
+
+Two more AD5X prints (10.2.5 and 10.2.6 era) shut down with `Timer too close` 2.7 and 4.3 s into the first layer: from the recording start, Klipper's reactor was busy essentially 100% of the time (stall time equal to elapsed time), with soak off, so the G-code context file was never read.
+
+- **The G-code observer does nothing without slicer context.** Armed or recording, every `G0`/`G1` went through an observer that read the motion state two or three times and collected the printing conditions, about 68 times per second on this first layer, even when there was no slicer context to match: the most likely main load, and new since beta 10 (beta 6–8 recorded first layers on this printer). Without context it now passes each command straight to Klipper. With context, conditions are read at most every 0.1 s instead of per command.
+- **Vibration gate removed** (added in 10.2.3): its accelerometer stream ran through every mesh, and its levels needed per-printer tuning. The guarded approach is exactly 10.2.2's again. `vibration_*` settings are gone; remove them from your config if you set them.
+- **Polling while recording:** `poll_pause` 0.1 s and `poll_wait` 0.05 s (about 5 readings per second), both set on the patched driver at the start of a recording and restored afterwards. `poll_rate` (10.2.6) is replaced.
+
+Software tests: 362 pass with 37 subtests (2 new for the observer load). The review's two gate regression tests were removed with the gate.
 
 ## Beta 10.2.6: 6 load cell readings per second while recording
 

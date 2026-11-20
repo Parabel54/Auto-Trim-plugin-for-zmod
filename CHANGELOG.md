@@ -1,3 +1,10 @@
+# 0.1.0-beta.10.2.7 — lighter first layer, vibration gate removed (2026-11-20)
+
+- G-code observer: no per-command work without slicer context (it ran for every G0/G1 while armed or recording, about 68/s on a first layer); with context, conditions cached for 0.1 s. Two AD5X prints shut down with Timer too close 2.7 and 4.3 s into the first layer with the reactor saturated from the recording start.
+- Vibration gate removed: the guarded approach is 10.2.2's again; vibration_* settings and their tests removed.
+- `poll_pause` 0.1 s and `poll_wait` 0.05 s while recording (about 5/s), restored afterwards; replaces `poll_rate`.
+- 362 software tests +37 subtests pass.
+
 # 0.1.0-beta.10.2.6 — 6 load cell readings per second while recording (2026-11-20)
 
 - `poll_rate` (default 6, 3.3-10): load cell readings per second while recording; driver pause 1/poll_rate - 0.10 s (0.067 s at 6/s). Was 10/s (pause 0). A 10.2.5 recording overloaded an AD5X at the first layer (Timer too close 2.7 s in; reactor stalls with _tick, G-code reader not running).

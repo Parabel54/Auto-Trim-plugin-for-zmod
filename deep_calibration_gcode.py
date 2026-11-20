@@ -627,11 +627,26 @@ class GcodeContext:
         self.last_eligible = None
         self.pressure_until = 0.
 
+    def _conditions_now(self):
+        # Printing conditions change slowly: collect them at most every 0.1 s,
+        # not once per G-code command
+        now = self.owner.reactor.monotonic()
+        cache = getattr(self, '_cond_cache', None)
+        if cache is None or now - cache[0] >= .1:
+            cache = self._cond_cache = (now, self.conditions(self.owner._context_conditions()))
+        return cache[1]
+
     def observe(self, name, original, gcmd):
         """Preserve the native result/error. Annotation can never fail printing."""
         record = None
+        # 10.2.7: without the slicer context nothing can be matched, so do no
+        # per-command work at all. Armed or recording, this ran for every G1
+        # (about 68 per second on a first layer) and, with the rest of the
+        # recording, overloaded an AD5X at the first layer (Timer too close).
+        if not (self.enabled and self.state == 'ready' and self.snapshot):
+            return original(gcmd)
         try:
-            if self.enabled and (self.owner.active or self.owner.armed is not None):
+            if self.owner.active or self.owner.armed is not None:
                 sd = self.owner.printer.lookup_object('virtual_sdcard', None)
                 # cmd_from_sd must be true, and offsets refer to the original
                 # line. Nested macro moves have no matching indexed code.
@@ -646,7 +661,7 @@ class GcodeContext:
                                       numeric == segment['parameters'] and self.modal_matches(segment, native_before)),
                                   native_before=native_before.get('gcode_position'),
                                   command_parameters=dict(params))
-                    record['conditions'] = self.conditions(self.owner._context_conditions())
+                    record['conditions'] = self._conditions_now()
                     if self.queue_hook is None:
                         self.timeline.append(record)
                         self.owner.printer.lookup_object('toolhead').register_lookahead_callback(

@@ -98,27 +98,6 @@ class ContextStartTests(unittest.TestCase):
     def test_status_reports_the_policy(self):
         self.assertEqual(self.source.status()['start_policy'], 'soak')
 
-class VibrationDefaultTest(unittest.TestCase):
-    def test_default_limit_is_400(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location('approach_default', Path(__file__).resolve().parents[1] / 'deep_calibration_approach.py')
-        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-        seen = {}
-        class Config:
-            def getfloat(self, name, default, **k): seen[name] = default; return default
-            def getint(self, name, default, **k): return default
-            def getboolean(self, name, default): return default
-            def get(self, name, default=None): return default
-            def get_printer(self): return self
-            def get_reactor(self): return None
-            def lookup_object(self, name): return SimpleNamespace(register_command=lambda *a, **k: None)
-            def register_event_handler(self, *a): pass
-            def register_command(self, *a, **k): pass
-        try:
-            m.DeepCalibrationApproach(Config())
-        except Exception:
-            pass
-        self.assertEqual(seen.get('vibration_limit'), 400.)
 
 if __name__ == '__main__':
     unittest.main()
