@@ -265,12 +265,14 @@ The overflow happened where 10.2.2 starts the recording, the accelerometer and f
 
 ### Vibration gate: clean probe touches on a shaking table
 
+**Removed in 10.2.7.** Kept here as the 10.2.3 release notes.
+
 The load cell feels the touch, so shaking from outside, such as another printer running on the same table, moves the moment it triggers. On one AD5X with an AD5M printing next to it, that scatter was what kept every strict soak calibration from passing.
 
 The toolhead accelerometer measures exactly that shaking. Around every probe touch (meshes, KAMP, `PROBE`, soak rounds, homing with the probe):
 
 1. **Before the touch,** with the nozzle still after any fast approach, the shaking is measured for 0.3 s (`vibration_window`). Above 150 mm/s² (`vibration_limit`) the touch waits until it settles, up to 10 s (`vibration_max_wait`).
-2. **During the touch,** the shaking is measured again (the limit is 400 mm/s² since 10.2.4). If the touch itself was shaken, its result is discarded, the nozzle goes back up, and the touch is made again, up to 2 times (`vibration_retries`). Homing touches wait but are never redone: Klipper re-zeroes Z on each homing touch.
+2. **During the touch,** the shaking is measured again (the limit was 400 mm/s² in 10.2.4–10.2.6). If the touch itself was shaken, its result is discarded, the nozzle goes back up, and the touch is made again, up to 2 times (`vibration_retries`). Homing touches wait but are never redone: Klipper re-zeroes Z on each homing touch.
 3. **If it is still shaken after that,** the last touch is kept and marked as disturbed, so a mesh is not failed halfway.
 
 Shaking is the RMS of each axis' deviation from its own mean, combined, in mm/s²: gravity and the board's tilt drop out. A quiet AD5X reads about 60–85 (the idle checks), so 150 is about twice the quiet level; raise it if touches wait on a printer that is simply noisier.
@@ -433,7 +435,7 @@ While it is installed, every touch is 1 mm/s whatever Auto Trim's `probe_speed` 
 
 `DC_APPROACH_STATUS` shows its state, including the vibration gate's counts and the last touch; `DC_APPROACH_RESET` forgets the recent touches, so the next probe is slow all the way. Run it after turning a bed levelling knob: the bed is then no longer where the last touch found it.
 
-Since 10.2.3 the approach also waits out, or redoes, touches shaken from outside: see [Vibration gate](#vibration-gate-clean-probe-touches-on-a-shaking-table).
+(10.2.3–10.2.6 added a vibration gate to the approach; it was removed in 10.2.7.)
 
 **After a zMod update:** the approach hooks into Klipper's probe code. If an update changes that code, Klipper refuses to start and names `deep_calibration_approach` (`requires the reviewed Klipper 13 native probe`). Remove the `[deep_calibration_approach]` section from `deep_calibration.cfg` and restart; everything else keeps working at Auto Trim's probe speed until the package is updated.
 
@@ -587,7 +589,7 @@ In `[deep_calibration]` in `deep_calibration.cfg`:
 | `max_file_mb`, `accel_rotate_mb`, `accel_max_mb`, `storage_reserve_mb` | 256, 32, 512, 64 | Storage limits |
 | `startup_integration` | False | Deep Calibration's own print start. Leave it off: Auto Trim prepares prints |
 
-In `[deep_calibration_approach]`: `approach_speed` (5 mm/s), `slow_clearance` (1 mm), `reference_max_age` (300 s), and the vibration gate: `vibration_gate` (True), `vibration_limit` (400 mm/s²; 150 in 10.2.3), `vibration_window` (0.3 s), `vibration_max_wait` (10 s), `vibration_retries` (2), `accelerometer` (lis2dw). In `[deep_calibration]`: `accel_overflow_limit` (3 within 60 s).
+In `[deep_calibration_approach]`: `approach_speed` (5 mm/s), `slow_clearance` (1 mm), `reference_max_age` (300 s). In `[deep_calibration]`: `accel_overflow_limit` (3 within 60 s).
 
 ## Limits
 
