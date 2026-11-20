@@ -101,11 +101,15 @@ def analyze_vibration(run, output, window=.25):
     end=next((e for e in reversed(run['events']) if e.get('event')=='session_end'),{})
     final=end.get('sensor_capture',{})
     expected=final.get('frames_received')
+    thinned = final.get('thinned_acceleration_frames', 0)
+    suspended = final.get('acceleration_suspensions', 0)
     valid=(run['complete'] and expected==state['count'] and state['count']>0 and not state['gaps']
            and not state['driver_errors'] and not state['driver_overflows']
+           and not thinned and not suspended
            and not final.get('error') and not final.get('acceleration_writer_error'))
     return dict(status='complete' if valid else 'incomplete_or_gapped',valid=valid,files=[str(p) for p in parts],
-                expected_frames=expected,matched_force_intervals=matched,unmatched_force_intervals=unmatched,
+                expected_frames=expected, matched_force_intervals=matched, unmatched_force_intervals=unmatched,
+                intentional_thinning_frames=thinned, intentional_suspensions=suspended,
                 force_samples_without_print_clock=sum(row.get('print_time') is None for row in run['samples']),
                 window_seconds=window,shaper_frequencies_hz=freqs,csv=str(target),**state,
                 limitation='acceleration aligned to force host-receipt print clock; ADC latency/force transfer remain unknown; no vibration subtraction or automatic correction')

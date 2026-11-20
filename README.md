@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.2.7 (2026-11-20). **Current official development continuation of beta 9.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
+Version 0.1.0-beta.10.3. **Development continuation of beta 10.2.7.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
 
 ## Contents
 
@@ -189,9 +189,27 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
 
+## Beta 10.3: recording load guard and native motion history
+
+The slicer snapshot and live recipe matching remain active. During recording with a ready snapshot, the motion command wrapper stores the virtual SD file position, command parameters and compact native coordinate checkpoints. Parameter matching and native trapezoid timing are resolved in the recorder tick. A tick reads the native toolhead history once for its recent force receipts. Separate motion phases can match the same indexed line when bed mesh splits the move. Missing history, overlapping candidates, unsupported motion or disagreeing native checkpoints leave the force sample unattributed and ineligible for knee fitting.
+
+By default, `load_guard: True` monitors timer lateness, recorder tick time and writer queue pressure:
+
+| Level | Recording behavior |
+| --- | --- |
+| 0 | Full requested capture |
+| 1 | Write alternating acceleration batches and keep batches with reported overflow |
+| 2 | Suspend this recorder's acceleration subscription and space context ticks at least 0.3 s apart |
+| 3 | Use the driver's original load-cell polling, skip ADC output and end an active knee search using its normal offset restoration |
+| 4 | End recording if pressure persists and report the size of any unwritten force tail |
+
+Five seconds of headroom reduce the guard by one level. The existing acceleration writer is kept open during a pause. The JSONL records each transition and the final data-loss counters. Acceleration gap and overflow validation still applies. Native ADC/temperature callbacks and other accelerometer clients continue to run. STATUS exposes the level, timer lateness and previous tick time. These are software guardrails and need a physical AD5X timing test.
+
+Keep the existing slicer start G-code. With the default soak policy, preparation reuses a snapshot loaded during the soak. A print that skipped the soak can still record force without starting a new slicer-file read at the first layer. The `arm` policy still explicitly permits an earlier read at arming. Shape mesh 1.0.1 and the 10.2.7 load-cell polling defaults are retained.
+
 ## Beta 10.2.7: lighter first layer, vibration gate removed
 
-Current continuation: **0.1.0-beta.10.2.7**. Replace the full folder, rerun the installer and reboot while idle.
+Previous baseline: **0.1.0-beta.10.2.7**.
 
 Two more AD5X prints (10.2.5 and 10.2.6 era) shut down with `Timer too close` 2.7 and 4.3 s into the first layer: from the recording start, Klipper's reactor was busy essentially 100% of the time (stall time equal to elapsed time), with soak off, so the G-code context file was never read.
 
@@ -348,7 +366,7 @@ The full settings snapshot is stored once as a `slicer_snapshot` event. Each for
 
 ### Which readings can feed a knee search
 
-Native G0/G1/G2/G3 handlers retain their normal behavior and errors. Read-only lookahead callbacks associate indexed commands with native print-clock intervals; samples use the motion queue at host receipt, not the latest queued file position. Cached motion status, nested macro motion, modified command parameters and ambiguous/missing timing do not qualify. ADC acquisition/serial latency is still unknown; this is an association with requested motion at receipt, not an encoder or an exact ADC timestamp.
+Native G0/G1/G2/G3 handlers retain their normal behavior and errors. Batched trap-queue history associates indexed linear moves with native print-clock intervals. Samples use requested motion at host receipt. Cached motion status, nested macro motion, modified command parameters and ambiguous or missing timing do not qualify. ADC acquisition and serial latency remain unknown.
 
 Eligible samples require verified first-layer model extrusion, emitted geometry, settled temperatures, known live PA/fan/override/mesh conditions, and sufficiently steady commanded speed/extrusion. Supports, skirt/brim, tower/purge, bridge, ironing, unknown roles, Z-moving paths, arcs, raft, mixed-color layers, spiral mode, model flushing and scarf walls are excluded as applicable. Relevant settings and selected material dimensions remain in the identity. Multi-material/remapped tool variants are excluded unless a single used-filament mapping can be established from the exported file; a plain single-material file needs no additional hook.
 
@@ -583,6 +601,7 @@ In `[deep_calibration]` in `deep_calibration.cfg`:
 | `knee_min_readings` | 8 | Fewest readings a step needs |
 | `log_directory` | `mod_data/deep_calibration_data` | Where recordings are saved |
 | `context_interval` | 0.1 | Seconds between position and state snapshots |
+| `load_guard` | True | Shed optional recorder data in stages and restore it after host timing recovers |
 | `filter_tau` | 0.5 | Smoothing of the live load cell value (s) |
 | `counts_per_gram` | 0 | Load cell scale; 0 keeps raw counts (set only after calibrating with a known weight) |
 | `accel_default` / `adc_default` | 1 / 1 | Record the accelerometer and temperatures by default |

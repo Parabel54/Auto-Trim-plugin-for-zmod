@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import test_capture as capture
+from test_first_print_auto import ArmCommand
 from test_gcode_context import gcode
 
 SOAK = 'info AUTO TRIM: bed heat soak 971 s (calibrated at 60 C, slowest point, bed started at 20 C), 93 s covered by the nozzle clean, waiting 878 s'
@@ -68,6 +69,17 @@ class ContextStartTests(unittest.TestCase):
         self.assertIsNone(self.source.worker)
         said = [m for m in self.messages if 'G-code context not read' in m]
         self.assertEqual(len(said), 1)                                        # said once
+
+    def test_actual_arm_and_start_do_not_scan_when_soak_was_skipped(self):
+        self.f.feed()
+        self.owner.auto_capture = True
+        self.owner.cmd_ARM(ArmCommand())
+        self.assertIsNone(self.source.worker)
+        self.owner.cmd_START(capture.Command())
+        self.source.poll()
+        self.assertIsNone(self.source.worker)
+        self.assertTrue(self.owner.active)
+        self.assertEqual(self.source.state, 'skipped')
 
     def test_soak_already_covered_is_not_a_wait(self):
         self.source.poll(); self.announce(COVERED)

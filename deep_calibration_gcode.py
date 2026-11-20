@@ -5,6 +5,7 @@ worker thread are used; virtual_sdcard's cursor is never read or changed here.
 """
 import collections
 import hashlib
+import itertools
 import json
 import logging
 import math
@@ -432,46 +433,21 @@ class GcodeContext:
         self.generation = 0
         self.flow_reference = None
         self.pressure_until = 0.
-        self.inflight = []
-        self.queue_hook = None
-        self.original_add_move = None
+        self.commands = collections.deque(maxlen=256)
+        self.recent = collections.deque(maxlen=1024)
+        self.epoch = None
+        self.live_conditions = None
+        self.history_drops = 0
+        self.observation_drops = 0
+        self.sd = self.gm = self.mcu = self.report = None
+        self.in_progress = []
+        self.last_check = None
 
     def install(self):
         if not self.enabled or self.handlers: return
-        toolhead = self.owner.printer.lookup_object('toolhead')
-        if not callable(getattr(toolhead, 'register_lookahead_callback', None)):
-            self.state, self.error = 'unsupported', 'native lookahead callbacks unavailable'
-            return
-        lookahead = getattr(toolhead, 'lookahead', None)
-        original_add = getattr(lookahead, 'add_move', None)
-        if not callable(original_add):
-            self.state, self.error = 'unsupported', 'native lookahead add_move unavailable'
-            return
-        self.original_add_move = original_add
-        def add_move(move):
-            result = original_add(move)
-            # Native Toolhead.move can yield after flushing this move. Attach
-            # timing before that flush, not after the G1 handler returns.
-            if self.inflight:
-                parent = self.inflight[-1]
-                try:
-                    native = self.owner._status('gcode_move', self.owner.reactor.monotonic())
-                    valid = self.validate_after(parent, native)
-                    child = dict(segment=parent['segment'], conditions=parent['conditions'],
-                                 source_valid=valid, parent=parent, start=None, end=None)
-                    self.timeline.append(child)
-                    def timed(end, child=child, move=move):
-                        duration = move.accel_t + move.cruise_t + move.decel_t
-                        if finite(end) and finite(duration) and duration >= 0:
-                            child.update(start=end-duration, end=end)
-                        else:
-                            child['source_valid'] = False
-                    move.timing_callbacks.append(timed)
-                except Exception:
-                    parent['source_valid'] = False
-                    self.state, self.error = 'unsupported', 'native queue annotation failed'
-            return result
-        lookahead.add_move = self.queue_hook = add_move
+        for attr, name in (('sd', 'virtual_sdcard'), ('gm', 'gcode_move'),
+                           ('mcu', 'mcu'), ('report', 'motion_report')):
+            setattr(self, attr, self.owner.printer.lookup_object(name, None))
         for name in ('G0', 'G1', 'G2', 'G3'):
             original = self.owner.gcode.register_command(name, None)
             if original is None: continue
@@ -508,12 +484,12 @@ class GcodeContext:
                     if [stat.st_size, stat.st_mtime_ns, stat.st_ino] != self.snapshot['file_stat']:
                         self.state, self.error = 'error', 'G-code changed after scan'
                         self.snapshot = None
-                        self.timeline.clear()
+                        self.clear_motion()
                         self.reset_gate()
                     elif (file_stat(path + '.dc.json') if os.path.exists(path + '.dc.json') else None) != self.snapshot['sidecar_stat']:
                         self.state, self.error = 'error', 'project snapshot changed after scan'
                         self.snapshot = None
-                        self.timeline.clear()
+                        self.clear_motion()
                         self.reset_gate()
                 except OSError as exc:
                     self.state, self.error = 'error', str(exc)
@@ -525,7 +501,7 @@ class GcodeContext:
         self.cancel.set()
         cancel = self.cancel = threading.Event()
         self.path, self.snapshot, self.error = path, None, None
-        self.timeline.clear()
+        self.clear_motion()
         self.reset_gate()
         self.emitted_hash = None
         if not path:
@@ -584,8 +560,13 @@ class GcodeContext:
     def poll(self):
         if not self.enabled: return
         self._listen()
-        if self.owner.active or self.owner.armed is not None or self.owner.knee is not None:
-            if self.start_policy == 'arm' or self._requested_for_current_file():
+        now = self.owner.reactor.monotonic()
+        watching = self.owner.active or self.owner.armed is not None or self.owner.knee is not None
+        if watching and (self.last_check is None or now - self.last_check >= 1. or not self.owner.active):
+            self.last_check = now
+            if (self._requested_for_current_file()
+                    or (self.owner.active and self.path and self._path() is None)
+                    or (self.start_policy == 'arm' and not self.owner.active)):
                 self.request()
             elif self.state != 'skipped':
                 # No soak wait before the first layer: reading the file now
@@ -594,7 +575,9 @@ class GcodeContext:
                 self.error = ('no soak wait before the first layer: G-code context not read '
                               '(gcode_context_start: soak)')
                 self.snapshot = None; self.path = None
-                self.timeline.clear(); self.reset_gate()
+                self.generation += 1
+                self.cancel.set()
+                self.clear_motion(); self.reset_gate()
                 self.skip_reported = False
             if self.state == 'skipped' and not self.skip_reported and (self.owner.active or self.owner.armed is not None):
                 self.skip_reported = True
@@ -627,96 +610,194 @@ class GcodeContext:
         self.last_eligible = None
         self.pressure_until = 0.
 
-    def _conditions_now(self):
-        # Printing conditions change slowly: collect them at most every 0.1 s,
-        # not once per G-code command
-        now = self.owner.reactor.monotonic()
-        cache = getattr(self, '_cond_cache', None)
-        if cache is None or now - cache[0] >= .1:
-            cache = self._cond_cache = (now, self.conditions(self.owner._context_conditions()))
-        return cache[1]
+    def clear_motion(self):
+        self.timeline.clear()
+        self.commands.clear()
+        self.recent.clear()
+        self.live_conditions = None
+        self.epoch = None
+
+    def start_recording(self):
+        self.clear_motion()
+        self.observation_drops = self.history_drops = 0
+        self.last_check = None
 
     def observe(self, name, original, gcmd):
-        """Preserve the native result/error. Annotation can never fail printing."""
-        record = None
-        # 10.2.7: without the slicer context nothing can be matched, so do no
-        # per-command work at all. Armed or recording, this ran for every G1
-        # (about 68 per second on a first layer) and, with the rest of the
-        # recording, overloaded an AD5X at the first layer (Timer too close).
-        if not (self.enabled and self.state == 'ready' and self.snapshot):
+        """Keep only an SD command and cheap native checkpoints on the hot path."""
+        if not (self.owner.active and self.state == 'ready' and self.snapshot):
+            return original(gcmd)
+        sd, gm = self.sd, self.gm
+        if sd is None or gm is None or not getattr(sd, 'cmd_from_sd', False):
             return original(gcmd)
         try:
-            if self.owner.active or self.owner.armed is not None:
-                sd = self.owner.printer.lookup_object('virtual_sdcard', None)
-                # cmd_from_sd must be true, and offsets refer to the original
-                # line. Nested macro moves have no matching indexed code.
-                if sd is not None and getattr(sd, 'cmd_from_sd', False):
-                    position = getattr(sd, 'file_position', None)
-                    segment = (self.snapshot or {}).get('segments', {}).get(position)
-                    params = gcmd.get_command_parameters()
-                    numeric = {k: float(v) for k, v in params.items() if k in 'XYZEFIJRP'}
-                    native_before = self.owner._status('gcode_move', self.owner.reactor.monotonic())
-                    record = dict(segment=segment, start=None, end=None,
-                                  source_valid=bool(segment and segment['code'] == name and
-                                      numeric == segment['parameters'] and self.modal_matches(segment, native_before)),
-                                  native_before=native_before.get('gcode_position'),
-                                  command_parameters=dict(params))
-                    record['conditions'] = self._conditions_now()
-                    if self.queue_hook is None:
-                        self.timeline.append(record)
-                        self.owner.printer.lookup_object('toolhead').register_lookahead_callback(
-                            lambda t, record=record: record.update(start=t))
+            offset = sd.file_position
+            epoch = self.epoch
+            before = self.checkpoint(gm)
+            stamp = self.owner.reactor.monotonic()
+            params = gcmd.get_command_parameters()
         except Exception:
-            record = None
-            self.state, self.error = 'unsupported', 'motion annotation failed'
-        if record is not None: self.inflight.append(record)
+            self.observation_drops += 1
+            self.commands.clear()
+            self.recent.clear()
+            return original(gcmd)
+        self.in_progress.append((stamp, before[0]))
         try:
             result = original(gcmd)
-        except Exception:
-            if record is not None: record['source_valid'] = False
+        except BaseException:
+            self.commands.clear()
+            self.recent.clear()
             raise
         finally:
-            if record is not None: self.inflight.pop()
-        if record is not None:
-            try:
-                native_after = self.owner._status('gcode_move', self.owner.reactor.monotonic())
-                record['source_valid'] = self.validate_after(record, native_after)
-                if self.queue_hook is None:
-                    self.owner.printer.lookup_object('toolhead').register_lookahead_callback(
-                        lambda t, record=record: record.update(end=t))
-            except Exception:
-                record['source_valid'] = False
+            self.in_progress.pop()
+        try:
+            if self.owner.active and self.state == 'ready':
+                if len(self.commands) == self.commands.maxlen:
+                    self.observation_drops += 1
+                    self.commands.clear()
+                    self.recent.clear()
+                self.commands.append((offset, name, params, stamp, epoch, before,
+                                      self.checkpoint(gm), bool(self.in_progress)))
+        except Exception:
+            self.observation_drops += 1
+            self.commands.clear()
+            self.recent.clear()
         return result
 
-    def validate_after(self, record, native):
-        before, after = record['native_before'], native.get('gcode_position')
-        record['native_after'] = after
-        segment = record['segment']
-        return bool(record['source_valid'] and self.modal_matches(segment, native, after=True)
-                    and before and after and len(before)>=4 and len(after)>=4
-                    and finite(segment['delta_e'])
-                    and abs(after[3]-before[3]-segment['delta_e']) <= 1.e-5)
+    @staticmethod
+    def checkpoint(gm):
+        # Klipper stores these native arrays in place; copy only the four axes
+        # and scalar modes. No status walks or parameter parsing in dispatch.
+        return (tuple(gm.last_position[:4]), tuple(gm.base_position[:4]),
+                gm.absolute_coord, gm.allow_absolute_extrude, gm.speed,
+                gm.speed_factor, gm.extrude_factor)
 
     @staticmethod
-    def modal_matches(segment, native, after=False):
-        if not segment:
+    def verified_command(segment, before, after):
+        if (before[2:4] != after[2:4] or before[2:4] != (
+                segment['absolute_coordinates'], segment['absolute_extrude'])
+                or not finite(after[5]) or after[5] <= 0
+                or not finite(after[6]) or after[6] <= 0 or before[6] != after[6]
+                or not finite(segment['feed']) or not finite(segment['delta_e'])
+                or abs(after[4] / after[5] / 60. - segment['feed']) > 1.e-5):
             return False
-        if (native.get('absolute_coordinates') is not segment['absolute_coordinates']
-                or native.get('absolute_extrude') is not segment['absolute_extrude']):
-            return False
-        position = native.get('gcode_position')
-        if not isinstance(position, (list, tuple)) or len(position) < 4:
-            return False
-        expected = segment['after' if after else 'before']
-        axes = 'XYZE' if segment['absolute_coordinates'] and segment['absolute_extrude'] else 'XYZ'
-        for axis in axes:
-            actual, planned = position['XYZE'.index(axis)], expected[axis]
-            if not finite(actual) or not finite(planned) or abs(actual - planned) > 1.e-5:
-                return False
-        if after and (not finite(native.get('speed')) or not finite(segment['feed'])
-                      or abs(native['speed'] / 60. - segment['feed']) > 1.e-5):
-            return False
-        return True
+        for step, key in ((before, 'before'), (after, 'after')):
+            pos, base = step[:2]
+            expected = segment[key]
+            for axis in range(3):
+                target = expected['XYZ'[axis]]
+                if not finite(target) or abs(pos[axis] - base[axis] - target) > 1.e-5:
+                    return False
+            if step[2] and step[3]:
+                target_e = expected['E']
+                if not finite(target_e) or abs((pos[3] - base[3]) / step[6] - target_e) > 1.e-5:
+                    return False
+        return abs((after[0][3] - before[0][3]) / after[6] - segment['delta_e']) <= 1.e-5
+
+    def batch(self, stamps, context):
+        """Match native motion phases at receipt times on the reactor tick."""
+        if not (self.owner.active and self.handlers and self.state == 'ready' and self.snapshot):
+            return
+        self.timeline.clear()
+        live = self.conditions(context)
+        identity = (live, context.get('mesh_identity'))
+        changed = identity != self.live_conditions
+        if changed:
+            self.epoch = object()
+            self.live_conditions = identity
+            self.recent.clear()
+        if self.mcu is None:
+            return
+        if len(self.commands) > 128:
+            self.observation_drops += len(self.commands)
+            self.commands.clear()
+            self.recent.clear()
+            return
+        for offset, name, params, stamp, epoch, before, after, nested in self.commands:
+            segment = self.snapshot['segments'].get(offset)
+            try:
+                valid = (not changed and epoch is self.epoch and not nested and segment
+                         and name == segment['code'] and name in ('G0','G1') and segment.get('xy_length')
+                         and (live['speed_factor'] is None
+                              or abs(after[5] * 60. - live['speed_factor']) <= 1.e-5)
+                         and (live['extrude_factor'] is None
+                              or abs(after[6] - live['extrude_factor']) <= 1.e-5)
+                         and {k: float(v) for k, v in params.items() if k in ('X','Y','Z','E','F','I','J','R','P')}
+                         == segment['parameters'] and self.verified_command(segment, before, after))
+            except (TypeError, ValueError, IndexError, KeyError):
+                valid = False
+            if not valid:
+                # An unmatched macro/rewrite can overlap an indexed path.
+                # Keep its geometry as a blocker until it ages out.
+                segment = None
+            self.recent.append((self.mcu.estimated_print_time(stamp), segment, before[0], after[0]))
+        self.commands.clear()
+        if not stamps or not self.recent:
+            return
+        clocks = [self.mcu.estimated_print_time(t) for t in stamps if 0 <= context['t'] - t <= .35]
+        if not clocks:
+            return
+        oldest = min(clocks)
+        while self.recent and self.recent[0][0] < oldest - 32.:
+            self.recent.popleft()
+        trapq = getattr(self.report, 'dtrapqs', {}).get('toolhead')
+        extract = getattr(trapq, 'extract_trapq', None)
+        if not callable(extract):
+            return
+        rows, backing = extract(oldest, max(clocks) + 1.e-6)
+        if len(rows) > 256:
+            self.history_drops += 1
+            return
+        phases = iter(rows)
+        phase = next(phases, None)
+        inflight = [(self.mcu.estimated_print_time(t), None, a, self.gm.last_position[:4])
+                    for t, a in self.in_progress]
+        for clock in sorted(set(clocks)):
+            while phase is not None and phase.print_time + phase.move_t <= clock:
+                phase = next(phases, None)
+            if phase is None or not phase.print_time <= clock < phase.print_time + phase.move_t:
+                continue
+            if any(r['start'] == phase.print_time for r in self.timeline):
+                continue
+            record = self.match_phase(phase, live, inflight)
+            if record is not None:
+                self.timeline.append(record)
+
+    def match_phase(self, phase, conditions, inflight=()):
+        """Only a unique emitted path containing the whole native XY phase."""
+        start = phase.print_time
+        dt = phase.move_t
+        distance = (phase.start_v + .5 * phase.accel * dt) * dt
+        vx, vy = phase.x_r * distance, phase.y_r * distance
+        if math.hypot(vx, vy) <= 1.e-9:
+            return None
+        x, y = phase.start_x, phase.start_y
+        candidates = []
+        for observed, segment, a, b in itertools.chain(self.recent, inflight):
+            if observed > start + .002:
+                continue
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            if (x < min(a[0], b[0]) - 1.e-5 or x > max(a[0], b[0]) + 1.e-5
+                    or y < min(a[1], b[1]) - 1.e-5 or y > max(a[1], b[1]) + 1.e-5):
+                continue
+            norm2 = dx * dx + dy * dy
+            if norm2 <= 1.e-12 or vx * dx + vy * dy <= 0:
+                continue
+            u, v = x - a[0], y - a[1]
+            if (abs(u * dy - v * dx) > 1.e-5 * math.sqrt(norm2)
+                    or abs((u + vx) * dy - (v + vy) * dx) > 1.e-5 * math.sqrt(norm2)
+                    or u * dx + v * dy < -1.e-5
+                    or (u + vx) * dx + (v + vy) * dy > norm2 + 1.e-5):
+                continue
+            candidates.append((segment, a, b))
+            if len(candidates) > 1:
+                return None
+        if not candidates:
+            return None
+        segment, a, b = candidates[0]
+        if segment is None:
+            return None
+        return dict(start=start, end=start + dt, segment=segment, source_valid=True,
+                    conditions=conditions, native_start=a, native_end=b)
 
     def status(self):
         s = self.snapshot or {}
@@ -725,7 +806,9 @@ class GcodeContext:
                     file_sha256=s.get('file_sha256'), physics_sha256=s.get('physics_sha256'),
                     setting_count=len(s.get('settings', {})), indexed_commands=len(s.get('segments', {})),
                     issues=s.get('issues', []), timing_observer_installed=bool(self.handlers),
-                    timing_before_native_pause=self.queue_hook is not None)
+                    timing_source='native_trapq_history' if self.handlers else None,
+                    timing_before_native_pause=False,
+                    observation_drops=self.observation_drops, history_drops=self.history_drops)
 
     @staticmethod
     def conditions(context):
@@ -758,6 +841,16 @@ class GcodeContext:
             else:
                 record = matches[0]
                 segment = record['segment']
+                if 'native_start' in record:
+                    a, b = record['native_start'], record['native_end']
+                    pos = motion.get('live_position')
+                    if not pos or len(pos) < 4 or not all(finite(v) for v in (pos[0], pos[1], pos[3])):
+                        reasons.append('unverified_extrusion_position')
+                    else:
+                        dx, dy = b[0] - a[0], b[1] - a[1]
+                        fraction = ((pos[0] - a[0]) * dx + (pos[1] - a[1]) * dy) / (dx*dx + dy*dy)
+                        if abs(pos[3] - (a[3] + fraction * (b[3] - a[3]))) > .02:
+                            reasons.append('native_extrusion_path_mismatch')
         gm = context.get('gcode', {})
         heaters = context.get('heaters', {})
         extruder = context.get('extruder_state', {})
@@ -851,7 +944,7 @@ class GcodeContext:
         self.last_velocity = velocity if finite(velocity) else None
         self.last_stamp, self.last_segment, self.last_identity = stamp, segment, fingerprint
         self.last_gate = dict(eligible=not reasons, reasons=sorted(set(reasons)),
-            mode='queue_timed_emitted_segment', segment=segment, fingerprint=fingerprint,
+            mode='trapq_matched_emitted_segment', segment=segment, fingerprint=fingerprint,
             physics_sha256=(snapshot or {}).get('physics_sha256'), file_sha256=(snapshot or {}).get('file_sha256'),
             print_time=clock, live=live, context_age=context['t'] - stamp if finite(context.get('t')) else None)
         self.last_gate.update(material=material, filament_diameter=diameter, nozzle_diameter=nozzle)

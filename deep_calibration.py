@@ -22,7 +22,7 @@ except ImportError:
     from deep_calibration_mesh import DeepCalibrationMesh
     from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.2.7'
+VERSION = '0.1.0-beta.10.3'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -139,6 +139,44 @@ class JsonWriter:
                 self.error = 'writer close failure: '+str(exc)
 
 
+class RecordingLoadGuard:
+    """Shed one tier at a time, restore one tier after sustained headroom."""
+    def __init__(self, enabled):
+        self.enabled = enabled
+        self.reset()
+
+    def reset(self):
+        self.level = self.bad = 0
+        self.quiet_since = self.due = None
+        self.work = self.lag = 0.
+
+    def update(self, now, interval, pressure):
+        self.lag = max(0., now - self.due) if self.due is not None else 0.
+        if not self.enabled:
+            return self.level
+        if self.lag > max(.075, .65 * interval) or self.work > .05 or pressure >= .25:
+            self.quiet_since = None
+            self.bad += 1
+            if self.bad >= (4 if self.level == 3 else 2):
+                self.bad = 0
+                return min(4, self.level + 1)
+        else:
+            self.bad = 0
+            if self.lag < .025 and self.work < .03 and pressure < .10:
+                if self.quiet_since is None:
+                    self.quiet_since = now
+                if self.level and now - self.quiet_since >= 5.:
+                    self.quiet_since = now
+                    return self.level - 1
+            else:
+                self.quiet_since = None
+        return self.level
+
+    def status(self):
+        return dict(enabled=self.enabled, level=self.level, lag_s=round(self.lag, 5),
+                    previous_tick_work_s=round(self.work, 5))
+
+
 class DeepCalibration:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -148,6 +186,8 @@ class DeepCalibration:
         if not os.path.isabs(self.directory):
             raise config.error('deep_calibration: log_directory must be absolute')
         self.interval = config.getfloat('context_interval', .1, minval=.1, maxval=1.)
+        self.load_guard = RecordingLoadGuard(config.getboolean('load_guard', True))
+        self.mesh_digest_cache = None
         self.tau = config.getfloat('filter_tau', .5, minval=.1, maxval=5.)
         if not finite(self.interval) or not finite(self.tau):
             raise config.error('deep_calibration: context_interval and filter_tau must be finite')
@@ -386,6 +426,34 @@ class DeepCalibration:
                 saved[0].poll_wait = saved[2]
             self.poll_saved = None
 
+    def _update_load_guard(self, now):
+        guard = self.load_guard
+        if not self.active or not guard.enabled:
+            return
+        queues = (getattr(self.writer, 'queue', None), getattr(self.sensors.writer, 'queue', None))
+        pressure = max((q.qsize() / q.maxsize for q in queues if q is not None and q.maxsize), default=0.)
+        interval = max(self.interval, .3) if guard.level >= 2 else self.interval
+        level = guard.update(now, interval, pressure)
+        if level == guard.level:
+            return
+        old, guard.level = guard.level, level
+        self._event('recording_load_guard', previous_level=old, level=level,
+                    timer_lag_s=guard.lag, previous_tick_work_s=guard.work, queue_pressure=pressure)
+        self.gcode.respond_info('DEEP CALIBRATION: recording load guard level %d (was %d)' % (level, old))
+        if not self.active:
+            return
+        if level >= 3:
+            self._poll_restore()
+            if self.knee is not None:
+                context = {'gcode': self._status('gcode_move', now)}
+                self._knee_stop(now, context, 'recording load guard', restore=True)
+        elif old >= 3:
+            self._poll_begin()
+        if level == 4:
+            self._end('recording_load_guard', flush=False)
+        else:
+            self.sensors.set_load_level(level)
+
     def _shutdown(self):
         self.slicer.stop()
         try:
@@ -489,9 +557,12 @@ class DeepCalibration:
         if mesh is not None:
             mesh_status = bm.get_status(now)
             if mesh_status.get('mesh_matrix') and mesh_status.get('probed_matrix'):
-                data['mesh_identity'] = digest({key:mesh_status.get(key) for key in
-                    ('profile_name','mesh_matrix','probed_matrix','mesh_min','mesh_max',
-                     'fade_start','fade_end','fade_target')})
+                cache = self.mesh_digest_cache
+                if cache is None or cache[0] is not mesh or cache[1] is not mesh_status:
+                    cache = self.mesh_digest_cache = (mesh, mesh_status, digest({key:mesh_status.get(key) for key in
+                        ('profile_name','mesh_matrix','probed_matrix','mesh_min','mesh_max',
+                         'fade_start','fade_end','fade_target')}))
+                data['mesh_identity'] = cache[2]
             pos = list(bm.last_position)
             factor = bm.get_z_factor(pos[2])
             expected = factor*(mesh.calc_z(pos[0],pos[1])-bm.fade_target)+bm.fade_target
@@ -527,6 +598,7 @@ class DeepCalibration:
         if self.writer and not self.writer.put(record):
             self._poll_restore()
             self.active = False
+            self.slicer.clear_motion()
             self.gcode.respond_info('DEEP CALIBRATION: recording stopped: '+str(self.writer.error))
             self.writer.close()
             self.sensors.stop()
@@ -537,7 +609,9 @@ class DeepCalibration:
         return self._write(dict(type='event', event=name, t=self.reactor.monotonic(), **values))
 
     def _tick(self, now):
+        began = self.reactor.monotonic()
         try:
+            self._update_load_guard(began)
             self.slicer.poll()
             with self.lock:
                 pending = list(self.pending)
@@ -546,6 +620,8 @@ class DeepCalibration:
             context = self._context(now)
             self.context_id += 1
             self.last_context = context
+            if self.active:
+                self._batch_slicer(pending, context)
             signature = safe([context['gcode'].get('homing_origin'),
                               context['gcode'].get('speed_factor'), context['gcode'].get('extrude_factor'),
                               {name:value.get('speed') for name,value in context['fans'].items()},
@@ -556,6 +632,7 @@ class DeepCalibration:
                 if self.writer.error:
                     self._poll_restore()
                     self.active = False
+                    self.slicer.clear_motion()
                     self.writer.close()
                     self.sensors.stop()
                     self.gcode.respond_info('DEEP CALIBRATION: '+str(self.writer.error))
@@ -595,10 +672,14 @@ class DeepCalibration:
                 self._event('capture_error', error=str(exc))
                 self._end('capture_error')
                 self.gcode.respond_info('DEEP CALIBRATION: capture stopped: '+str(exc))
-        return now+self.interval
+        self.load_guard.work = max(0., self.reactor.monotonic() - began)
+        interval = max(self.interval, .3) if self.active and self.load_guard.level >= 2 else self.interval
+        self.load_guard.due = now + interval
+        return self.load_guard.due
 
     def _drain_force(self,pending,now,context):
-        for sequence, stamp, raw, grams, generation in pending:
+        attributed_start = len(pending) - 16
+        for index, (sequence, stamp, raw, grams, generation) in enumerate(pending):
             # Keep raw data exact. Context is taken on the reactor thread
             # and deliberately has a separate timestamp/id and lag field.
             filtered = self.signal.feed(stamp, raw, generation)
@@ -607,7 +688,12 @@ class DeepCalibration:
             self.history.append((stamp, raw, generation,
                                  0<=now-stamp<=.35 and finite(velocity) and abs(velocity)<.05
                                  and finite(ev) and abs(ev)<.01 and abs(grams)<=5120))
-            motion_at_receipt = self._motion_at(stamp)
+            if not (self.active or self.knee is not None):
+                self.last_sample = dict(t=stamp, raw=raw, board_grams=grams, sequence=sequence,
+                                        native_command_generation=generation, board_overload=abs(grams)>5120, **filtered)
+                continue
+            motion_at_receipt = (self._motion_at(stamp) if index >= attributed_start else
+                                 dict(method='unattributed_force_backlog', sample_time=stamp))
             gate = self.slicer.sample(stamp, motion_at_receipt, context)
             k = self.knee
             if k is not None and k['phase'] in ('down', 'up'):
@@ -635,7 +721,6 @@ class DeepCalibration:
                 delta = filtered['filtered_raw']-self.baseline['raw'] if baseline_ok else None
                 shaper_frequencies = [float(v['shaper_freq']) for v in context['shaper'].values()
                                       if v.get('shaper_freq') is not None and float(v['shaper_freq'])>0]
-                motion_at_receipt = self._motion_at(stamp)
                 live = motion_at_receipt.get('live_position')
                 bed = self.printer.lookup_object('bed_mesh',None)
                 current_mesh = bed.get_mesh() if bed else None
@@ -662,8 +747,17 @@ class DeepCalibration:
         if not pending:return
         now=self.reactor.monotonic()
         context=self._context(now);self.context_id+=1;self.last_context=context
+        self._batch_slicer(pending, context)
         self._write(dict(type='context',**context))
         self._drain_force(pending,now,context)
+
+    def _batch_slicer(self, pending, context):
+        try:
+            self.slicer.batch([entry[1] for entry in pending[-16:]], context)
+        except Exception:
+            self.slicer.clear_motion()
+            self.slicer.history_drops += 1
+            logging.exception('deep_calibration: motion history attribution')
 
     def _recipe(self, gcmd, previous=None):
         data = dict(previous or {})
@@ -1235,8 +1329,8 @@ class DeepCalibration:
         params['MATERIAL'] = recipe['material']
         if 'RUN' in params and not re.fullmatch(r'[A-Za-z0-9_-]{1,48}', str(params['RUN'])):
             raise gcmd.error('DEEP CALIBRATION: invalid RUN identifier')
-        self.slicer.path = None
-        self.slicer.request()
+        if self.slicer.start_policy == 'arm':
+            self.slicer.request()
         self.armed = dict(params=params, recipe=recipe, seen=False)
         gcmd.respond_info('DEEP CALIBRATION: armed for this print (%s, first layer %.2f mm): recording starts with '
                           'the first layer, babysteps label the offsets, and it stops when layer %d starts'
@@ -1286,7 +1380,10 @@ class DeepCalibration:
                                      reserve_bytes=self.sensors.reserve_bytes)
         except OSError as exc:
             raise gcmd.error('DEEP CALIBRATION: cannot open log: '+str(exc))
-        self.slicer.request()
+        if self.slicer._requested_for_current_file():
+            self.slicer.request()
+        self.load_guard.reset()
+        self.slicer.start_recording()
         self.slicer.reset_gate()
         self.slicer.emitted_hash = None
         self.recipe, self.label = recipe, 'UNLABELLED'
@@ -1307,6 +1404,7 @@ class DeepCalibration:
                          bed_mesh=bm.get_status(now) if bm else None,
                          shaper=self._shaper(), filter_tau=self.tau,
                          context_interval=self.interval,
+                         load_guard=self.load_guard.status(),
                          sensor_capture=sensor_settings,
                          limitations=['native reply rate limits bandwidth','receipt clock is not ADC clock',
                                       'live motion is requested motion, not encoder feedback',
@@ -1322,15 +1420,19 @@ class DeepCalibration:
         gcmd.respond_info('DEEP CALIBRATION: live recording started: '+self.writer.path+
                           '. MARK labels/SET record metadata; they do not move or change printing.')
 
-    def _end(self, reason):
+    def _end(self, reason, flush=True):
         if not self.active or self.ending:return
         self.ending=True
         try:
-            try:self._flush_force_tail()
+            with self.lock:
+                unwritten_tail = len(self.pending) if not flush else 0
+            try:
+                if flush:self._flush_force_tail()
             except Exception as exc:
                 reason='capture_end_error';self._event('capture_error',error=str(exc))
             self.sensors.stop()
-            try:self._flush_force_tail()
+            try:
+                if flush:self._flush_force_tail()
             except Exception as exc:
                 reason='capture_end_error';self._event('capture_error',error=str(exc))
             self.auto_session = False
@@ -1344,10 +1446,12 @@ class DeepCalibration:
             self.knee_last = None
             if self.active:
                 self._event('session_end',reason=reason,raw_dropped=self.dropped-self.session_dropped,
-                            sensor_capture=self.sensors.status())
+                            sensor_capture=self.sensors.status(), load_guard=self.load_guard.status(),
+                            unwritten_force_tail=unwritten_tail)
                 self.active=False
                 self.writer.close()
         finally:
+            self.slicer.clear_motion()
             self._poll_restore()
             self.ending=False
 
@@ -1407,6 +1511,7 @@ class DeepCalibration:
         return dict(self._auto_status(),host_time=eventtime,version=VERSION,recording=self.active,connected=self.reader is not None,
                     source=self.source,last_sample=self.last_sample,
                     polling_accelerated=self.poll_saved is not None,
+                    load_guard=self.load_guard.status(),
                     slicer_context=self.slicer.status(), segment_eligibility=self.slicer.last_gate,
                     probe_approach=self._status('deep_calibration_approach',eventtime),
                     age=eventtime-self.last_sample['t'] if self.last_sample else None,

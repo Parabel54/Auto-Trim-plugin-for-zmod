@@ -1,3 +1,9 @@
+# 0.1.0-beta.10.3 — recording load and native motion history
+
+- Buffer compact command observations only while recording with a loaded slicer snapshot. Match native motion phases in batches from Klipper's trap queue and exclude unknown or ambiguous attribution from knee fitting.
+- Drop alternate acceleration batches under load, then pause the recorder's accelerometer subscription and slow the context tick. Restore native force polling and suppress ADC output under heavier load. Recover gradually and stop capture if overload persists.
+- Reuse the preloaded slicer snapshot and avoid a default-policy read at recording start. Keep the 10.2.7 poll settings, guarded approach and SHAPE lift fix.
+
 # 0.1.0-beta.10.2.7 — lighter first layer, vibration gate removed (2026-11-20)
 
 - G-code observer: no per-command work without slicer context (it ran for every G0/G1 while armed or recording, about 68/s on a first layer); with context, conditions cached for 0.1 s. Two AD5X prints shut down with Timer too close 2.7 and 4.3 s into the first layer with the reactor saturated from the recording start.

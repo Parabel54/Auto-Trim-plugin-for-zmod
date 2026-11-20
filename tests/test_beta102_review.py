@@ -32,11 +32,16 @@ class AuditRegressions(unittest.TestCase):
         self.path = Path(self.f.temp.name)/'print.gcode'; self.path.write_text(gcode())
         self.s.snapshot = parse_file(str(self.path)); self.s.state = 'ready'; self.s.path = str(self.path)
         self.segment = next(iter(self.s.snapshot['segments'].values()))
-        self.c.armed = {'test':True}
+        self.c.active = True
         self.f.objects['virtual_sdcard'] = SimpleNamespace(cmd_from_sd=True,file_position=self.segment['offset'])
-        self.f.objects['toolhead'].register_lookahead_callback = lambda cb: cb(10.)
         self.native = native_move(); self.native.allow_absolute_extrude = False
         self.f.objects['gcode_move'] = self.native
+        self.s.sd = self.f.objects['virtual_sdcard']
+        self.s.gm = self.native
+        self.s.mcu = SimpleNamespace(estimated_print_time=lambda t:t)
+        self.s.handlers['G1'] = self.native.cmd_G1
+        self.context = dict(t=1.)
+        self.s.batch([], self.context)
 
     def observe(self):
         return self.s.observe('G1', self.native.cmd_G1, ArmCommand(X='100', E='2.5', F='2400'))
@@ -53,16 +58,19 @@ class AuditRegressions(unittest.TestCase):
         self.native.absolute_coord = False
         self.observe()
         self.assertEqual(self.native.last_position, [100.,0.,.2,2.5])
-        self.assertFalse(self.s.timeline[-1]['source_valid'])
+        self.s.batch([], self.context)
+        self.assertIsNone(self.s.recent[-1][1])
 
     def test_hidden_macro_coordinate_change_cannot_pass_attribution(self):
         self.native.last_position[0] = 20.
         self.observe()
-        self.assertFalse(self.s.timeline[-1]['source_valid'])
+        self.s.batch([], self.context)
+        self.assertIsNone(self.s.recent[-1][1])
 
     def test_matching_native_move_is_attributable(self):
         self.observe()
-        self.assertTrue(self.s.timeline[-1]['source_valid'])
+        self.s.batch([], self.context)
+        self.assertIs(self.s.recent[-1][1], self.segment)
 
     def test_long_queued_move_is_not_truncated_to_five_seconds(self):
         self.f.objects['toolhead'].status.update(print_time=30.,estimated_print_time=10.)
@@ -103,7 +111,8 @@ class AuditRegressions(unittest.TestCase):
             self.native.cmd_G1(gcmd)
             self.native.last_position[0] += 5.
         self.s.observe('G1', rewritten, ArmCommand(X='100',E='2.5',F='2400'))
-        self.assertFalse(self.s.timeline[-1]['source_valid'])
+        self.s.batch([], self.context)
+        self.assertIsNone(self.s.recent[-1][1])
 
     def test_inherited_feed_mismatch_cannot_be_attributed(self):
         self.path.write_text(gcode().replace('G1 X100 E2.5 F2400', 'G1 X100 E2.5'))
@@ -111,7 +120,8 @@ class AuditRegressions(unittest.TestCase):
         self.f.objects['virtual_sdcard'].file_position = seg['offset']
         self.native.speed = 20.
         self.s.observe('G1', self.native.cmd_G1, ArmCommand(X='100',E='2.5'))
-        self.assertFalse(self.s.timeline[-1]['source_valid'])
+        self.s.batch([], self.context)
+        self.assertIsNone(self.s.recent[-1][1])
 
 
     def test_pinned_orca_duplicate_plate_coordinates_are_valid_and_retained(self):

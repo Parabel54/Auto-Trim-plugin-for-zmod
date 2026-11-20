@@ -172,6 +172,7 @@ class SensorExtension:
         self.starting=False
         self.stopping=False
         self.callback=self._batch
+        self.load_level = self.thinned_batches = self.thinned_frames = self.thinned_adc = self.accel_suspensions = 0
 
     def configure(self,gcmd):
         flags=[]
@@ -189,6 +190,7 @@ class SensorExtension:
         self.callback_max_seconds=0.
         self.overflow_times=[];self.overflows_total=0
         self.joined_running=False;self.counter_base=None
+        self.load_level = self.thinned_batches = self.thinned_frames = self.thinned_adc = self.accel_suspensions = 0
         if self.accel_enabled:
             chip=self.printer.lookup_object(self.accel_name,None)
             self.helper=getattr(chip,'batch_bulk',None)
@@ -225,10 +227,7 @@ class SensorExtension:
                                                                    data_rate=1600,clock='MCU print_time'),
                                                self.rotate_bytes,self.max_bytes,self.reserve_bytes)
                 # Rotation never changes measurement state or other clients.
-                self.attached=True
-                # joining a stream already running (e.g. the vibration gate's)?
-                self.joined_running=bool(self.helper.client_cbs);self.counter_base=None
-                self.helper.add_client(self.callback)
+                self._attach_accel()
             self.begin=self.reactor.monotonic()
         except Exception:
             self.stop();raise
@@ -268,10 +267,14 @@ class SensorExtension:
                     self.error='native acceleration overflows repeated: %d within 60 s'%len(self.overflow_times)
                     return False
             if rows:
-                if not self.writer.put(rows,self.reactor.monotonic(),errors,overflows):
-                    self.error=self.writer.error or 'acceleration writer stopped';return False
                 self.last_batch_time=self.reactor.monotonic()
                 self.batches_received+=1;self.frames_received+=len(rows)
+                if self.load_level == 1 and self.batches_received % 2 == 0 and not overflows:
+                    self.thinned_batches += 1
+                    self.thinned_frames += len(rows)
+                    return True
+                if not self.writer.put(rows,self.reactor.monotonic(),errors,overflows):
+                    self.error=self.writer.error or 'acceleration writer stopped';return False
             return True
         except Exception as exc:
             self.error='acceleration callback failure: '+str(exc);return False
@@ -281,7 +284,7 @@ class SensorExtension:
     def tick(self,now):
         if not self.owner.active or self.starting:return
         if self.writer and self.writer.error:self.error=self.writer.error
-        if self.accel_enabled and now-(self.last_batch_time if self.last_batch_time is not None else self.begin)>2.:
+        if self.accel_enabled and self.load_level < 2 and now-(self.last_batch_time if self.last_batch_time is not None else self.begin)>2.:
             self.error=self.error or 'acceleration stream stale or absent for more than 2 s'
         if self.error:raise RuntimeError(self.error)
         if self.adc_enabled:self._drain_adc(now)
@@ -310,6 +313,9 @@ class SensorExtension:
             self.adc_last[name]=stamp;self.adc_received[name]=received
             if name in self.adc_lost:
                 self.adc_lost.discard(name);self._adc_anomaly(name,'channel_resumed',received=received)
+            if self.load_level >= 3:
+                self.thinned_adc += 1
+                continue
             accepted=self.owner._write(dict(type='adc',channel=name,t=received,print_time=stamp,
                                    normalized_value=value,age=age,callback_format=self.adc_format,
                                    representation='native_normalized_aggregate_not_individual_conversions'))
@@ -358,9 +364,20 @@ class SensorExtension:
         if self.adc_enabled and self.owner.active:
             try:self._drain_adc(self.reactor.monotonic())
             except Exception as exc:self.error=self.error or 'ADC final drain failed: '+str(exc)
-        # Native helper has no public remove_client. Remove exactly our callback
-        # through the verified client list, stopping the driver only if no other
-        # consumers remain. Do not call _stop when someone else is subscribed.
+        self._detach_accel()
+        if self.writer:self.writer.close()
+        self.stopping=False
+
+    def _attach_accel(self):
+        self.joined_running = bool(self.helper.client_cbs)
+        self.counter_base = None
+        self.last_batch_time = None
+        self.begin = self.reactor.monotonic()
+        self.attached = True
+        self.helper.add_client(self.callback)
+
+    def _detach_accel(self):
+        # Remove only this recorder's subscription.
         if self.helper is not None and self.attached:
             try:
                 if self.callback in self.helper.client_cbs:
@@ -370,15 +387,28 @@ class SensorExtension:
                 self.error=self.error or 'native acceleration cleanup failed: '+str(exc)
             finally:
                 self.attached=False
-        if self.writer:self.writer.close()
-        self.stopping=False
+
+    def set_load_level(self, level):
+        old, self.load_level = self.load_level, level
+        if not self.accel_enabled:
+            return
+        if old < 2 <= level:
+            self.accel_suspensions += 1
+            self._detach_accel()
+        elif level < 2 <= old:
+            self._attach_accel()
 
     def status(self):
         return dict(acceleration=self.accel_enabled,adc=self.adc_enabled,adc_channels=list(self.channels),
                     adc_callback_format=self.adc_format,adc_attached=self.adc_attached,
                     adc_report_timestamps=dict(self.adc_last),attached=self.attached,error=self.error,
                     adc_anomalies=dict(self.adc_anomalies),adc_lost=sorted(self.adc_lost),
-                    accel_overflows=self.overflows_total,
+                    accel_overflows=self.overflows_total, load_level=self.load_level,
+                    thinned_acceleration_batches=self.thinned_batches,
+                    thinned_acceleration_frames=self.thinned_frames,
+                    thinned_adc_reports=self.thinned_adc,
+                    acceleration_suspensions=self.accel_suspensions,
+                    acceleration_suspended=self.accel_enabled and self.load_level >= 2,
                     batches_received=self.batches_received,frames_received=self.frames_received,
                     callback_max_seconds=self.callback_max_seconds,
                     last_batch_host_time=self.last_batch_time,

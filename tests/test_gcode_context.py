@@ -194,35 +194,14 @@ class GateTests(unittest.TestCase):
         self.assertEqual(self.source.state, 'ready'); self.assertEqual(handle.tell(), 10)
         self.assertEqual(len(self.source.cache), 1)
 
-    def test_observer_preserves_native_result_errors_and_rejects_changed_parameters(self):
-        self.owner.armed = {'fixture': True}
-        self.f.objects['virtual_sdcard'] = SimpleNamespace(cmd_from_sd=True, file_position=self.segment['offset'])
-        clock = [10.]
-        self.f.objects['toolhead'].register_lookahead_callback = lambda cb: cb(clock[0])
-        gm = self.f.objects['gcode_move'].status
-        gm.update(gcode_position=[self.segment['before'][a] for a in 'XYZE'],
-                  absolute_coordinates=True, absolute_extrude=False, speed=2400.)
-        def native(cmd):
-            clock[0] += 5.
-            gm['gcode_position'] = [self.segment['after'][a] for a in 'XYZE']
-            return 'native-return'
-        self.source.timeline.clear()
-        result = self.source.observe('G1', native, ArmCommand(X='100', E='2.5', F='2400'))
-        self.assertEqual(result, 'native-return')
-        self.assertEqual((self.source.timeline[0]['start'], self.source.timeline[0]['end']), (10., 15.))
-        self.assertTrue(self.source.timeline[0]['source_valid'])
-        self.source.observe('G1', native, ArmCommand(X='101', E='2.5', F='2400'))
-        self.assertFalse(self.source.timeline[-1]['source_valid'])
-        with self.assertRaisesRegex(RuntimeError, 'native error'):
-            self.source.observe('G1', mock.Mock(side_effect=RuntimeError('native error')), ArmCommand())
-
     def test_annotation_failure_cannot_fail_native_motion(self):
-        self.owner.armed = {'fixture': True}
-        self.f.objects['virtual_sdcard'] = SimpleNamespace(cmd_from_sd=True, file_position=self.segment['offset'])
-        self.f.objects['toolhead'].register_lookahead_callback = mock.Mock(side_effect=RuntimeError('observer'))
+        self.owner.active = True
+        self.source.sd = SimpleNamespace(cmd_from_sd=True)
+        self.source.gm = SimpleNamespace()
         native = mock.Mock(return_value=77)
         self.assertEqual(self.source.observe('G1', native, ArmCommand()), 77)
         native.assert_called_once()
+        self.assertEqual(self.source.observation_drops, 1)
 
     def test_missing_emitted_feed_and_geometry_remain_recordable(self):
         self.source.snapshot = parse_file(str(self.path))
@@ -281,9 +260,11 @@ class StrictKneeTests(unittest.TestCase):
             return dict(method='native_trapq_at_host_receipt', print_time=t,
                         live_position=[10,20,-2.6,0], live_velocity=40., live_extruder_velocity=1.)
         self.owner._motion_at = motion
-        self.source.timeline[0]['conditions'] = self.source.conditions(self.owner._context_conditions())
+        record = self.source.timeline[0]
+        record['conditions'] = self.source.conditions(self.owner._context_conditions())
         self.f.feed()
         self.owner.cmd_START(capture.Command(ADC=0, ACCEL=0))
+        self.source.timeline.append(record)
         for _ in range(12): self.f.feed()
         self.assertTrue(self.source.last_gate['eligible'], self.source.last_gate['reasons'])
         scripts = []
