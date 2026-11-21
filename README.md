@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.3.2 (2026-11-20). **Development continuation of beta 10.3.1.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
+Version 0.1.0-beta.10.3.3 (2026-11-21). **Development continuation of beta 10.3.2.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
 
 ## Contents
 
@@ -188,6 +188,20 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 **By hand:** `DEEP_CALIBRATION_MARK LABEL=<label> NOTE="..."` during a recording. Labels: `GOOD`, `TOO_HIGH`, `TOO_LOW`, `TRAVEL`, `TRANSITION` and `UNLABELLED`. `DC_MARK_GOOD` is a shortcut for `GOOD`, handy as a screen button. A label you set by hand after the last babystep is kept: the automatic `GOOD` at layer 2 does not replace it.
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
+
+## Beta 10.3.3: the load guard judges the tick's share of its interval
+
+Current continuation: **0.1.0-beta.10.3.3**. Replace the full folder, rerun the installer and reboot while idle.
+
+The first AD5X recording with the slicer data loaded through the first layer (10.3.2, `SOAK=AUTO`) ran the whole layer: 77,905 objects frozen out of garbage collection, no shutdown. But the load guard climbed to level 6 within 43 s and stayed there: 80% of the acceleration frames thinned, the load cell slowed to 3.4 readings per second, while Klipper was never behind (timer lag under 0.03 s, queues empty). It escalated on a fixed limit of 0.05 s of tick work, and the tick's slicer batch matching takes 0.05–0.09 s at every interval (each tick matches the commands since the last one).
+
+- A tick now counts as overloaded when the lag is high, the tick takes more than half its interval, or the queues fill. 0.08 s every 0.1 s is 80%; every 0.2 s it is 40%.
+- One level down only when the work would stay under 35% even at the lower level's shorter interval, with little lag, for 5 s: no bouncing between levels.
+- Replayed on that recording: level 1 (printer state every 0.2 s) and nothing further; full acceleration and the normal load cell rate.
+
+Software tests: 375 pass with 37 subtests (5 new, from the recording).
+
+Also seen in that recording, not changed here: none of the 1303 load cell readings was eligible for slicer-based analysis (43% `missing_or_ambiguous_queue`, 36% `model_flushing_not_separate`, 21% `extrusion_history_settling`).
 
 ## Beta 10.3.2: slicer data kept out of garbage collection
 

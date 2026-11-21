@@ -22,7 +22,7 @@ except ImportError:
     from deep_calibration_mesh import DeepCalibrationMesh
     from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.3.2'
+VERSION = '0.1.0-beta.10.3.3'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -162,11 +162,17 @@ class RecordingLoadGuard:
         self.quiet_since = self.due = None
         self.work = self.lag = 0.
 
-    def update(self, now, interval, pressure):
+    def update(self, now, interval, pressure, lower_interval=None):
+        # 10.3.3: the tick's work counts as a share of its interval. A fixed
+        # 0.05 s limit escalated to the last level within 43 s and never
+        # recovered on an AD5X whose tick took 0.05-0.09 s at every interval
+        # (slicer batch matching), with Klipper never behind (lag < 0.03 s).
         self.lag = max(0., now - self.due) if self.due is not None else 0.
         if not self.enabled:
             return self.level
-        if self.lag > max(.075, .65 * interval) or self.work > .05 or pressure >= .25:
+        duty = self.work / interval if interval > 0 else 0.
+        lower = lower_interval if lower_interval and lower_interval > 0 else interval
+        if self.lag > max(.075, .65 * interval) or duty > .5 or pressure >= .25:
             self.quiet_since = None
             self.bad += 1
             if self.bad >= (2 if self.level < 3 else 3):
@@ -174,7 +180,9 @@ class RecordingLoadGuard:
                 return min(GUARD_MAX_LEVEL, self.level + 1)
         else:
             self.bad = 0
-            if self.lag < .025 and self.work < .03 and pressure < .10:
+            # recover only if the work would still be a small share at the
+            # lower level's shorter interval (no bouncing between levels)
+            if self.lag < .025 and self.work / lower < .35 and pressure < .10:
                 if self.quiet_since is None:
                     self.quiet_since = now
                 if self.level and now - self.quiet_since >= 5.:
@@ -444,7 +452,7 @@ class DeepCalibration:
             return
         queues = (getattr(self.writer, 'queue', None), getattr(self.sensors.writer, 'queue', None))
         pressure = max((q.qsize() / q.maxsize for q in queues if q is not None and q.maxsize), default=0.)
-        level = guard.update(now, self._tick_interval(), pressure)
+        level = guard.update(now, self._tick_interval(), pressure, self._tick_interval(guard.level - 1))
         if level == guard.level:
             return
         old, guard.level = guard.level, level
@@ -463,9 +471,10 @@ class DeepCalibration:
             self._poll_begin()
         self.sensors.set_load_level(level)
 
-    def _tick_interval(self):
-        level = self.load_guard.level if self.active else 0
-        return max(self.interval, GUARD_TICK_INTERVAL[min(level, GUARD_MAX_LEVEL)])
+    def _tick_interval(self, level=None):
+        if level is None:
+            level = self.load_guard.level if self.active else 0
+        return max(self.interval, GUARD_TICK_INTERVAL[max(0, min(level, GUARD_MAX_LEVEL))])
 
     def _shutdown(self):
         self.slicer.stop()

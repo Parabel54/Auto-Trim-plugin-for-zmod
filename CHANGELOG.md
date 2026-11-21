@@ -1,3 +1,8 @@
+# 0.1.0-beta.10.3.3 — load guard judges the tick's share of its interval (2026-11-21)
+
+- Load guard: overload when lag is high, tick work exceeds half the interval, or queues fill (was a fixed 0.05 s of work); recovery only when the work stays under 35% of the lower level's interval. A 10.3.2 recording climbed to level 6 in 43 s with Klipper never behind, the tick's slicer matching taking 0.05-0.09 s at every interval.
+- 375 software tests +37 subtests pass.
+
 # 0.1.0-beta.10.3.2 — slicer data kept out of garbage collection (2026-11-20)
 
 - `gc.freeze()` once the G-code context is loaded: a full garbage collection over the parsed file (about 0.5 s on an AD5X) shut a print down with Timer too close during the shape mesh after a soak-time read of a 5.8 MB file. Status reports `gc_frozen_objects`.

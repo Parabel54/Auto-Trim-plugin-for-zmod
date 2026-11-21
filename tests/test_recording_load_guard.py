@@ -115,6 +115,33 @@ class LoadGuardTests(unittest.TestCase):
         self.assertEqual(guard.level, GUARD_MAX_LEVEL)
 
 
+class GuardDutyTests(unittest.TestCase):
+    # 10.3.3, from a real AD5X recording: tick work 0.05-0.09 s at every
+    # interval, Klipper never behind (lag under 0.03 s)
+    def run_ticks(self, works, start_level=0):
+        g = RecordingLoadGuard(True); g.level = start_level; now = 0.
+        intervals = (.1, .2, .2, .5, .5, .5, 1.)
+        for w in works:
+            interval = intervals[g.level]; lower = intervals[max(0, g.level - 1)]
+            now += interval; g.due = now; g.work = w
+            g.level = g.update(now + .001, interval, 0., lower)
+        return g.level
+    def test_heavy_tick_at_the_shortest_interval_takes_one_step(self):
+        self.assertEqual(self.run_ticks([.077, .077]), 1)
+    def test_same_work_at_level_one_stays_there_instead_of_climbing(self):
+        self.assertEqual(self.run_ticks([.077, .077] + [.05, .09, .06, .08] * 60), 1)
+    def test_no_bouncing_back_to_a_level_that_would_overload(self):
+        self.assertEqual(self.run_ticks([.06] * 200, start_level=1), 1)
+    def test_light_work_recovers_to_full(self):
+        self.assertEqual(self.run_ticks([.005] * 300, start_level=6), 0)
+    def test_real_lag_still_escalates(self):
+        g = RecordingLoadGuard(True); levels = []
+        for n in range(2):
+            g.due = n * .5; g.work = .01
+            levels.append(g.update(n * .5 + .4, .1, 0., .1))   # 0.4 s late, light work
+        self.assertEqual(levels, [0, 1])
+
+
 class AccelerationFormatTests(unittest.TestCase):
     def test_older_files_without_thinning_still_read(self):
         import tempfile, os
