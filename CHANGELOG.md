@@ -1,3 +1,10 @@
+# 0.1.0-beta.10.3.4 — slicer eligibility fixes, POLL_PAUSE per recording (2026-11-21)
+
+- `model_flushing_not_separated` only when the print uses more than one filament or the list is unknown (a single-filament AD5X print with flush_into_infill = 1 was entirely rejected).
+- Print-wide reasons no longer restart the segment settling run (every reading was also segment_settling).
+- `POLL_PAUSE=` (0-1 s) on DEEP_CALIBRATION_START for that recording only; cleared at the end.
+- 381 software tests +37 subtests pass.
+
 # 0.1.0-beta.10.3.3 — load guard judges the tick's share of its interval (2026-11-21)
 
 - Load guard: overload when lag is high, tick work exceeds half the interval, or queues fill (was a fixed 0.05 s of work); recovery only when the work stays under 35% of the lower level's interval. A 10.3.2 recording climbed to level 6 in 43 s with Klipper never behind, the tick's slicer matching taking 0.05-0.09 s at every interval.

@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.3.3 (2026-11-21). **Development continuation of beta 10.3.2.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
+Version 0.1.0-beta.10.3.4 (2026-11-21). **Development continuation of beta 10.3.3.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
 
 ## Contents
 
@@ -188,6 +188,21 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 **By hand:** `DEEP_CALIBRATION_MARK LABEL=<label> NOTE="..."` during a recording. Labels: `GOOD`, `TOO_HIGH`, `TOO_LOW`, `TRAVEL`, `TRANSITION` and `UNLABELLED`. `DC_MARK_GOOD` is a shortcut for `GOOD`, handy as a screen button. A label you set by hand after the last babystep is kept: the automatic `GOOD` at layer 2 does not replace it.
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
+
+## Beta 10.3.4: slicer eligibility fixes, POLL_PAUSE per recording
+
+Current continuation: **0.1.0-beta.10.3.4**. Replace the full folder, rerun the installer and reboot while idle.
+
+In the 10.3.2 AD5X recording, none of the 1303 load cell readings was eligible for slicer-based analysis. Two rules were wrong:
+
+- **Flushing on a single-filament print.** `model_flushing_not_separated` rejected every reading because the profile had `flush_into_infill = 1`, but the print used one filament and never flushed. It now applies only when the print uses more than one filament, or the filament list is unknown. Prints with more than one filament are still rejected (`tool_mapping_changed`).
+- **Print-wide reasons restarted the settling run.** Any reason, including print-wide settings (flushing, raft, spiral mode, scarf seams, tool mapping, snapshot issues), restarted the 0.5 s settling run, so every reading was also `segment_settling`. Print-wide reasons still make a reading ineligible but no longer restart the run; conditions of the moment (speed or extrusion changes, retractions, no matched command) still do.
+
+Replayed on that recording, with the 10.3.3 guard fix as well, about 10% of the readings would qualify; the rest are speed changes on a curved part made of 0.75 mm segments at 100 mm/s. Slower first layers and straight-line test pads give more.
+
+- **`POLL_PAUSE=` on `DEEP_CALIBRATION_START`**, 0 to 1 s, for that recording only, e.g. `POLL_PAUSE=0` for about 10 load cell readings per second in an idle test. Prints keep `poll_pause` (0.1 s); the override is cleared when the recording ends.
+
+Software tests: 381 pass with 37 subtests (6 new).
 
 ## Beta 10.3.3: the load guard judges the tick's share of its interval
 

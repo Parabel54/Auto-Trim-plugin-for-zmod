@@ -615,6 +615,14 @@ class GcodeContext:
             for show in sorted(requested):self.owner._filament_report(show,self.owner.gcode.respond_info)
             requested.clear()
 
+    PRINT_WIDE = frozenset(('raft_first_layer', 'mixed_color_sublayer', 'spiral_mode',
+                            'model_flushing_not_separated', 'scarf_wall_not_separated',
+                            'tool_mapping_changed', 'unresolved_tool_material_dimensions'))
+
+    def _print_wide(self, reason, snapshot):
+        return (reason in self.PRINT_WIDE or reason.startswith(('missing_eligibility_setting:', 'slicer_snapshot_'))
+                or reason in ((snapshot or {}).get('issues') or ()))
+
     def reset_gate(self):
         self.last_gate = self.steady_since = self.last_velocity = None
         self.last_stamp = self.last_segment = self.last_identity = None
@@ -911,7 +919,13 @@ class GcodeContext:
                 reasons.append('mixed_color_sublayer')
             if settings.get('spiral_mode') not in ('0', 'false', 'False'):
                 reasons.append('spiral_mode')
-            if settings.get('flush_into_infill') not in ('0', 'false', 'False') or settings.get('flush_into_objects') not in ('0', 'false', 'False'):
+            # 10.3.4: flushing only happens at a filament change. A print with
+            # one filament never flushes, whatever the profile says (an AD5X
+            # print was rejected entirely for flush_into_infill = 1); prints
+            # with more than one are already rejected (tool_mapping_changed).
+            if ((used is None or len(used) > 1) and
+                    (settings.get('flush_into_infill') not in ('0', 'false', 'False')
+                     or settings.get('flush_into_objects') not in ('0', 'false', 'False'))):
                 reasons.append('model_flushing_not_separated')
             if (segment['role'] in ('outer wall', 'inner wall', 'perimeter', 'external perimeter')
                     and settings.get('seam_slope_type', '').lower() not in ('none', '0')):
@@ -949,7 +963,13 @@ class GcodeContext:
         if self.last_velocity is not None and self.last_stamp is not None and stamp > self.last_stamp:
             if finite(velocity) and abs(velocity - self.last_velocity) / (stamp - self.last_stamp) > 20.:
                 reasons.append('speed_transition')
-        if reasons or fingerprint != self.last_identity or (self.last_stamp is not None and stamp - self.last_stamp > .5):
+        # 10.3.4: only conditions of this moment restart the settling run.
+        # Print-wide settings (flushing, raft, spiral, scarf, tool mapping,
+        # snapshot issues) keep the reading ineligible but say nothing about
+        # whether the flow is steady now; restarting on them made every
+        # reading "settling" too.
+        moment = [r for r in reasons if not self._print_wide(r, snapshot)]
+        if moment or fingerprint != self.last_identity or (self.last_stamp is not None and stamp - self.last_stamp > .5):
             self.steady_since = stamp
         if self.steady_since is None: self.steady_since = stamp
         if stamp - self.steady_since < self.settle: reasons.append('segment_settling')

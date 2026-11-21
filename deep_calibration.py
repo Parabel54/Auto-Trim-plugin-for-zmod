@@ -22,7 +22,7 @@ except ImportError:
     from deep_calibration_mesh import DeepCalibrationMesh
     from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.3.3'
+VERSION = '0.1.0-beta.10.3.4'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -428,7 +428,8 @@ class DeepCalibration:
         old = getattr(self.reader, 'poll_time', None)
         if not finite(old) or old < 0:
             return
-        pause = getattr(self, 'poll_pause', .1)
+        run_pause = getattr(self, 'run_poll_pause', None)
+        pause = run_pause if run_pause is not None else getattr(self, 'poll_pause', .1)
         old_wait = getattr(self.reader, 'poll_wait', None)
         wait = getattr(self, 'poll_wait', .05)
         self.poll_saved = (self.reader, old, old_wait)
@@ -1378,6 +1379,19 @@ class DeepCalibration:
         seconds = gcmd.get_float('MAX',3600.,minval=30.,maxval=21600.)
         if not finite(seconds): raise gcmd.error('DEEP CALIBRATION: MAX must be finite')
         run = str(gcmd.get('RUN','capture'))
+        # 10.3.4: POLL_PAUSE= for this recording only (e.g. 0 for about 10
+        # readings per second in idle tests); prints keep poll_pause
+        getp = getattr(gcmd, 'get_command_parameters', None)
+        raw_pause = (getp() if callable(getp) else getattr(gcmd, 'params', {}) or {}).get('POLL_PAUSE')
+        self.run_poll_pause = None
+        if raw_pause is not None:
+            try:
+                self.run_poll_pause = float(raw_pause)
+            except ValueError:
+                self.run_poll_pause = -1.
+            if not finite(self.run_poll_pause) or not 0. <= self.run_poll_pause <= 1.:
+                self.run_poll_pause = None
+                raise gcmd.error('DEEP CALIBRATION: POLL_PAUSE must be 0 to 1 s')
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,48}',run):
             raise gcmd.error('DEEP CALIBRATION: invalid RUN identifier')
         recipe = self._recipe(gcmd)
@@ -1445,6 +1459,7 @@ class DeepCalibration:
     def _end(self, reason, flush=True):
         if not self.active or self.ending:return
         self.ending=True
+        self.run_poll_pause=None         # POLL_PAUSE= applies to its own recording only
         try:
             with self.lock:
                 unwritten_tail = len(self.pending) if not flush else 0
