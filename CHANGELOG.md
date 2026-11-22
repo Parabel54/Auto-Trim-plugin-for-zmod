@@ -1,3 +1,10 @@
+# 0.1.0-beta.10.3.5 — automatic force zero, drift tracking, measurement times (2026-11-22)
+
+- `auto_zero` (default on): zero from steady non-extruding readings after the last tare, taken at the first extrusion of the recording (`baseline` kind auto_after_tare, or `auto_zero_unavailable`). Recordings since 10.3 never had a zero (only DEEP_CALIBRATION_ZERO, discarded by Auto Trim's re-tare).
+- Drift tracking from in-air moments (`zero_drift` events; per-reading drift and drift-corrected force).
+- Measurement time per reading: `acquisition_t` and `acquisition_uncertainty_s` from the board period and the previous reply; gate and knee use `motion_at_acquisition`.
+- 388 software tests +37 subtests pass.
+
 # 0.1.0-beta.10.3.4 — slicer eligibility fixes, POLL_PAUSE per recording (2026-11-21)
 
 - `model_flushing_not_separated` only when the print uses more than one filament or the list is unknown (a single-filament AD5X print with flush_into_infill = 1 was entirely rejected).

@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.3.4 (2026-11-21). **Development continuation of beta 10.3.3.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
+Version 0.1.0-beta.10.3.5 (2026-11-22). **Development continuation of beta 10.3.4.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
 
 ## Contents
 
@@ -188,6 +188,19 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 **By hand:** `DEEP_CALIBRATION_MARK LABEL=<label> NOTE="..."` during a recording. Labels: `GOOD`, `TOO_HIGH`, `TOO_LOW`, `TRAVEL`, `TRANSITION` and `UNLABELLED`. `DC_MARK_GOOD` is a shortcut for `GOOD`, handy as a screen button. A label you set by hand after the last babystep is kept: the automatic `GOOD` at layer 2 does not replace it.
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
+
+## Beta 10.3.5: automatic force zero, drift tracking, measurement times
+
+Current continuation: **0.1.0-beta.10.3.5**. Replace the full folder, rerun the installer and reboot while idle.
+
+None of the first-layer recordings since 10.3 had a force zero: `baseline_valid` false and no grams on all 24,000+ readings. The zero came only from `DEEP_CALIBRATION_ZERO`, typed while idle, and was discarded at any re-tare; Auto Trim re-tares the load cell at print temperature before every print. Raw counts were always recorded.
+
+- **Automatic zero (`auto_zero`, default on).** Between the last tare and the first extrusion of the recording, readings taken while not extruding are collected; at the first extrusion, if at least 10 readings over 2 s after the last tare are steady (interquartile range up to `auto_zero_max_iqr`, 500 counts), their median becomes the zero (`baseline` event, kind `auto_after_tare`). Otherwise `auto_zero_unavailable` says why. A valid manual zero takes precedence.
+- **Drift tracking.** During the recording, readings with the nozzle in the air (not extruding, more than 0.15 mm above the printing height, e.g. Z-hop travels) are compared with the zero; each such moment gives a `zero_drift` event. Every reading then carries `zero_drift_counts`, its age, and drift-corrected force (`filtered_delta_counts_drift_corrected`, `filtered_grams_drift_corrected`) next to the uncorrected values.
+- **Measurement times.** Readings were stamped when their reply arrived; the board's conversion happened earlier, by up to one board period (0.1 s). Since every reply carries a fresh conversion, made after the previous reply, each reading now gets an estimated measurement time (`acquisition_t`, the middle of that window) and its uncertainty (`acquisition_uncertainty_s`, about ±0.05 s at 5 readings per second, ±0.025 s at 10). The slicer gate and the knee search use the motion at that time (`motion_at_acquisition`); `t` and `motion_at_receipt` are still recorded as before.
+- With `counts_per_gram` set (e.g. 52.56 on the AD5X it was measured on), force is in grams.
+
+Software tests: 388 pass with 37 subtests (7 new).
 
 ## Beta 10.3.4: slicer eligibility fixes, POLL_PAUSE per recording
 
