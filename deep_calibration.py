@@ -22,7 +22,7 @@ except ImportError:
     from deep_calibration_mesh import DeepCalibrationMesh
     from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.3.5'
+VERSION = '0.1.0-beta.10.3.6'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -229,6 +229,10 @@ class DeepCalibration:
         # layer touches, and drift tracked whenever the nozzle is in the air
         self.auto_zero = config.getboolean('auto_zero', True)
         self.auto_zero_max_iqr = config.getfloat('auto_zero_max_iqr', 500., minval=10.)
+        # 10.3.6: the window between the re-tare and the first extrusion is
+        # about 2 s; 10 readings over 2 s missed by one on an AD5X
+        self.auto_zero_min_readings = config.getint('auto_zero_min_readings', 6, minval=3)
+        self.auto_zero_min_span = config.getfloat('auto_zero_min_span', 1., minval=.2)
         self.zero_candidates = collections.deque(maxlen=200)
         self.auto_zero_closed = False
         self.zero_drift = None
@@ -721,9 +725,7 @@ class DeepCalibration:
             # Keep raw data exact. Context is taken on the reactor thread
             # and deliberately has a separate timestamp/id and lag field.
             filtered = self.signal.feed(stamp, raw, generation)
-            lo = stamp - self.board_period if self.last_receipt is None else max(self.last_receipt, stamp - self.board_period)
-            hi = max(lo, stamp - .002)
-            acquired, acquired_uncertainty = (lo + hi) / 2., (hi - lo) / 2.
+            acquired, acquired_uncertainty = self._acquisition(stamp, self.last_receipt)
             self.last_receipt = stamp
             if self.auto_zero and (self.active or self.armed is not None):
                 self._zero_observe(acquired, raw, grams, generation,
@@ -795,6 +797,13 @@ class DeepCalibration:
                                      and max(shaper_frequencies)<.4*(filtered['rate_hz'] or 0)),
                                  **filtered))
 
+    def _acquisition(self, stamp, previous):
+        # the board's conversion: after the previous reply, at most one board
+        # period before this one (replies carry fresh conversions)
+        lo = stamp - self.board_period if previous is None else max(previous, stamp - self.board_period)
+        hi = max(lo, stamp - .002)
+        return (lo + hi) / 2., (hi - lo) / 2.
+
     def _zero_observe(self, t, raw, grams, generation, motion):
         if motion is None:
             return
@@ -822,7 +831,7 @@ class DeepCalibration:
         if self.baseline is not None and self.baseline.get('generation') == generation:
             return                                    # a valid manual zero takes precedence
         c = [x for x in self.zero_candidates if x[2] == generation and t - x[0] <= 20.]
-        if len(c) < 10 or c[-1][0] - c[0][0] < 2.:
+        if len(c) < self.auto_zero_min_readings or c[-1][0] - c[0][0] < self.auto_zero_min_span:
             self._event('auto_zero_unavailable', reason='too_few_quiet_readings_after_tare', readings=len(c))
             return
         raws = sorted(x[1] for x in c)
@@ -856,7 +865,14 @@ class DeepCalibration:
 
     def _batch_slicer(self, pending, context):
         try:
-            self.slicer.batch([entry[1] for entry in pending[-16:]], context)
+            # 10.3.6: the gate looks up each reading's motion at its estimated
+            # measurement time; match motion at those times too (and at receipt)
+            stamps, previous = [], self.last_receipt
+            for entry in pending:
+                acquired = self._acquisition(entry[1], previous)[0]
+                previous = entry[1]
+                stamps.extend((acquired, entry[1]))
+            self.slicer.batch(stamps[-32:], context)
         except Exception:
             self.slicer.clear_motion()
             self.slicer.history_drops += 1
@@ -1568,6 +1584,7 @@ class DeepCalibration:
             if self.active:
                 self._event('session_end',reason=reason,raw_dropped=self.dropped-self.session_dropped,
                             sensor_capture=self.sensors.status(), load_guard=self.load_guard.status(),
+                            slicer_matching=self.slicer.match_status(),
                             unwritten_force_tail=unwritten_tail)
                 self.active=False
                 self.writer.close()

@@ -632,6 +632,7 @@ class GcodeContext:
 
     def clear_motion(self):
         self.timeline.clear()
+        self.misses = []
         self.commands.clear()
         self.recent.clear()
         self.live_conditions = None
@@ -640,6 +641,19 @@ class GcodeContext:
     def start_recording(self):
         self.clear_motion()
         self.observation_drops = self.history_drops = 0
+        self.miss_counts = {}
+
+    def match_status(self):
+        return dict(observation_drops=self.observation_drops, history_drops=self.history_drops,
+                    phase_misses=dict(getattr(self, 'miss_counts', {})))
+
+    def _miss(self, start, end, kind):
+        # 10.3.6: why a motion phase found no unique G-code line
+        self.misses.append((start, end, kind))
+        counts = getattr(self, 'miss_counts', None)
+        if counts is None:
+            counts = self.miss_counts = {}
+        counts[kind] = counts.get(kind, 0) + 1
         self.last_check = None
 
     def observe(self, name, original, gcmd):
@@ -718,6 +732,7 @@ class GcodeContext:
         if not (self.owner.active and self.handlers and self.state == 'ready' and self.snapshot):
             return
         self.timeline.clear()
+        self.misses = []
         live = self.conditions(context)
         identity = (live, context.get('mesh_identity'))
         changed = identity != self.live_conditions
@@ -728,6 +743,7 @@ class GcodeContext:
         if self.mcu is None:
             return
         if len(self.commands) > 128:
+            self._miss(-1., -1., 'commands_overflow')
             self.observation_drops += len(self.commands)
             self.commands.clear()
             self.recent.clear()
@@ -765,6 +781,7 @@ class GcodeContext:
             return
         rows, backing = extract(oldest, max(clocks) + 1.e-6)
         if len(rows) > 256:
+            self._miss(-1., -1., 'history_overflow')
             self.history_drops += 1
             return
         phases = iter(rows)
@@ -775,12 +792,17 @@ class GcodeContext:
             while phase is not None and phase.print_time + phase.move_t <= clock:
                 phase = next(phases, None)
             if phase is None or not phase.print_time <= clock < phase.print_time + phase.move_t:
+                self._miss(clock, clock, 'no_motion_phase')
                 continue
-            if any(r['start'] == phase.print_time for r in self.timeline):
+            if (any(r['start'] == phase.print_time for r in self.timeline)
+                    or any(m[0] == phase.print_time for m in self.misses)):
                 continue
+            self.last_miss = None
             record = self.match_phase(phase, live, inflight)
             if record is not None:
                 self.timeline.append(record)
+            else:
+                self._miss(phase.print_time, phase.print_time + phase.move_t, self.last_miss or 'no_candidate')
 
     def match_phase(self, phase, conditions, inflight=()):
         """Only a unique emitted path containing the whole native XY phase."""
@@ -789,6 +811,7 @@ class GcodeContext:
         distance = (phase.start_v + .5 * phase.accel * dt) * dt
         vx, vy = phase.x_r * distance, phase.y_r * distance
         if math.hypot(vx, vy) <= 1.e-9:
+            self.last_miss = 'no_xy_motion'
             return None
         x, y = phase.start_x, phase.start_y
         candidates = []
@@ -810,11 +833,14 @@ class GcodeContext:
                 continue
             candidates.append((segment, a, b))
             if len(candidates) > 1:
+                self.last_miss = 'ambiguous_queue_segment'
                 return None
         if not candidates:
+            self.last_miss = 'no_queue_segment'
             return None
         segment, a, b = candidates[0]
         if segment is None:
+            self.last_miss = 'blocked_by_unverified_command'
             return None
         return dict(start=start, end=start + dt, segment=segment, source_valid=True,
                     conditions=conditions, native_start=a, native_end=b)
@@ -844,6 +870,7 @@ class GcodeContext:
 
     def sample(self, stamp, motion, context):
         reasons, segment, record = [], None, None
+        queue_miss = None
         if not self.enabled: return dict(eligible=True, reasons=[], mode='legacy_opt_out')
         snapshot = self.snapshot
         if self.state != 'ready' or not snapshot: reasons.append('slicer_snapshot_' + self.state)
@@ -854,7 +881,14 @@ class GcodeContext:
         else:
             matches = [r for r in self.timeline if finite(r['start']) and finite(r['end'])
                        and r['start'] <= clock < r['end']]
-            if len(matches) != 1: reasons.append('missing_or_ambiguous_queue_segment')
+            if len(matches) != 1:
+                reasons.append('missing_or_ambiguous_queue_segment')
+                # 10.3.6: which kind (kept under the same reason for compatibility)
+                if matches:
+                    queue_miss = 'overlapping_timeline_records'
+                else:
+                    kinds = [m[2] for m in getattr(self, 'misses', ()) if m[0] <= clock <= m[1]]
+                    queue_miss = kinds[0] if kinds else 'not_examined'
             elif (not matches[0]['source_valid'] or
                   not matches[0].get('parent', {}).get('source_valid', True)):
                 reasons.append('unindexed_or_macro_motion')
@@ -980,6 +1014,8 @@ class GcodeContext:
             physics_sha256=(snapshot or {}).get('physics_sha256'), file_sha256=(snapshot or {}).get('file_sha256'),
             print_time=clock, live=live, context_age=context['t'] - stamp if finite(context.get('t')) else None)
         self.last_gate.update(material=material, filament_diameter=diameter, nozzle_diameter=nozzle)
+        if queue_miss is not None:
+            self.last_gate['queue_miss'] = queue_miss
         if self.last_gate['eligible']:
             self.last_eligible = dict(self.last_gate, t=stamp)
         return self.last_gate

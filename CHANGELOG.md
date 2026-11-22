@@ -1,3 +1,10 @@
+# 0.1.0-beta.10.3.6 — slicer matching at the right times, miss kinds, zero threshold (2026-11-22)
+
+- The matcher matches motion at each reading's estimated measurement time as well as its arrival (10.3.5's gate looked up times the matcher had not matched).
+- `queue_miss` on unmatched readings (no line, ambiguous, blocked by an unverified command, no XY motion, no motion phase); `slicer_matching` counters in session_end.
+- Automatic zero: 6 readings over 1 s (`auto_zero_min_readings`, `auto_zero_min_span`); 10 over 2 s missed by one.
+- 396 software tests +37 subtests pass.
+
 # 0.1.0-beta.10.3.5 — automatic force zero, drift tracking, measurement times (2026-11-22)
 
 - `auto_zero` (default on): zero from steady non-extruding readings after the last tare, taken at the first extrusion of the recording (`baseline` kind auto_after_tare, or `auto_zero_unavailable`). Recordings since 10.3 never had a zero (only DEEP_CALIBRATION_ZERO, discarded by Auto Trim's re-tare).
