@@ -22,7 +22,7 @@ except ImportError:
     from deep_calibration_mesh import DeepCalibrationMesh
     from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.3.6'
+VERSION = '0.1.0-beta.10.3.7'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -233,6 +233,12 @@ class DeepCalibration:
         # about 2 s; 10 readings over 2 s missed by one on an AD5X
         self.auto_zero_min_readings = config.getint('auto_zero_min_readings', 6, minval=3)
         self.auto_zero_min_span = config.getfloat('auto_zero_min_span', 1., minval=.2)
+        # 10.3.7: a drift check counts only for a steady moment in the air;
+        # 10.3.6's checks swung between -81 and +80 g on an AD5X
+        self.drift_min_readings = config.getint('drift_min_readings', 3, minval=2)
+        self.drift_max_iqr = config.getfloat('drift_max_iqr', 300., minval=10.)
+        self.drift_max_step = config.getfloat('drift_max_step', 800., minval=10.)
+        self.drift_pending = None
         self.zero_candidates = collections.deque(maxlen=200)
         self.auto_zero_closed = False
         self.zero_drift = None
@@ -275,7 +281,7 @@ class DeepCalibration:
         # reply while recording (10.2.7; restored afterwards). Each reading
         # takes about 0.10 s plus the pause (measured: pause 0 gave 9.8/s,
         # 0.02 gave 7.9/s, 0.2 gave 3.3/s): 0.1 s gives about 5 per second.
-        self.poll_pause = config.getfloat('poll_pause', .1, minval=0., maxval=1.)
+        self.poll_pause = config.getfloat('poll_pause', .05, minval=0., maxval=1.)
         self.poll_wait = config.getfloat('poll_wait', .05, minval=0., maxval=.5)
         self.knee_require_margin = config.getboolean('knee_require_margin', True)
         self.knee_cfg = dict(
@@ -822,7 +828,8 @@ class DeepCalibration:
                 self.zero_candidates.append((t, raw, generation))
             elif (self.active and z is not None and self.printing_z
                     and z > statistics.median(self.printing_z) + .15):
-                self.air_cluster.append((t, raw))     # nozzle in the air: a drift check
+                speed = motion.get('live_velocity')
+                self.air_cluster.append((t, raw, z, speed if finite(speed) else None))   # nozzle in the air
                 return
         self._close_air_cluster()
 
@@ -847,10 +854,34 @@ class DeepCalibration:
         cluster, self.air_cluster = self.air_cluster, []
         if not cluster or self.baseline is None:
             return
-        self.zero_drift = dict(t=cluster[-1][0], counts=statistics.median(r for _, r in cluster) - self.baseline['raw'],
-                               readings=len(cluster))
-        self._event('zero_drift', measured_t=self.zero_drift['t'], counts=self.zero_drift['counts'],
-                    readings=self.zero_drift['readings'])
+        raws = sorted(c[1] for c in cluster)
+        counts = statistics.median(raws) - self.baseline['raw']
+        zs = [c[2] for c in cluster]
+        speeds = [c[3] for c in cluster if c[3] is not None]
+        reason = None
+        if len(cluster) < self.drift_min_readings:
+            reason = 'too_few_readings'
+        elif max(zs) - min(zs) > .02:
+            reason = 'height_changing'
+        elif speeds and max(speeds) - min(speeds) > max(1., .05 * statistics.median(speeds)):
+            reason = 'speed_changing'
+        elif raws[3 * len(raws) // 4] - raws[len(raws) // 4] > self.drift_max_iqr:
+            reason = 'scatter'
+        else:
+            previous = self.zero_drift['counts'] if self.zero_drift is not None else 0.
+            if abs(counts - previous) > self.drift_max_step:
+                # a large jump needs the next steady check to agree
+                if self.drift_pending is not None and abs(counts - self.drift_pending) <= self.drift_max_iqr:
+                    self.drift_pending = None
+                else:
+                    self.drift_pending = counts
+                    reason = 'jump_unconfirmed'
+        if reason is not None:
+            self._event('zero_drift_rejected', reason=reason, counts=counts, readings=len(cluster))
+            return
+        self.drift_pending = None
+        self.zero_drift = dict(t=cluster[-1][0], counts=counts, readings=len(cluster))
+        self._event('zero_drift', measured_t=self.zero_drift['t'], counts=counts, readings=len(cluster))
 
     def _flush_force_tail(self):
         if not self.active:return
@@ -1525,6 +1556,7 @@ class DeepCalibration:
         self.session_dropped = self.dropped
         self.auto_zero_closed = False
         self.zero_drift = None
+        self.drift_pending = None
         self.air_cluster = []
         self.printing_z.clear()
         self.active = True

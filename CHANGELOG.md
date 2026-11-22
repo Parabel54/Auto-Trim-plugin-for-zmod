@@ -1,3 +1,10 @@
+# 0.1.0-beta.10.3.7 — steady drift checks, why commands are unverified, shipped settings (2026-11-22)
+
+- Drift checks only for steady in-air moments (readings, height, speed, scatter); large jumps need confirmation; `zero_drift_rejected` events. 10.3.6 checks swung between -81 and +80 g.
+- Unverified commands name the failed check; blocked readings carry it; session_end counts them.
+- `poll_pause: 0.05` and `counts_per_gram: 52.56` active in the config (one counts_per_gram line; 10.3's active `counts_per_gram: 0` silently overrode values added elsewhere in the section).
+- 405 software tests +37 subtests pass.
+
 # 0.1.0-beta.10.3.6 — slicer matching at the right times, miss kinds, zero threshold (2026-11-22)
 
 - The matcher matches motion at each reading's estimated measurement time as well as its arrival (10.3.5's gate looked up times the matcher had not matched).

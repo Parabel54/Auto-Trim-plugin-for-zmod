@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.3.6 (2026-11-22). **Development continuation of beta 10.3.5.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
+Version 0.1.0-beta.10.3.7 (2026-11-22). **Development continuation of beta 10.3.6.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
 
 ## Contents
 
@@ -188,6 +188,18 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 **By hand:** `DEEP_CALIBRATION_MARK LABEL=<label> NOTE="..."` during a recording. Labels: `GOOD`, `TOO_HIGH`, `TOO_LOW`, `TRAVEL`, `TRANSITION` and `UNLABELLED`. `DC_MARK_GOOD` is a shortcut for `GOOD`, handy as a screen button. A label you set by hand after the last babystep is kept: the automatic `GOOD` at layer 2 does not replace it.
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
+
+## Beta 10.3.7: steady drift checks, why commands are unverified, shipped settings
+
+Current continuation: **0.1.0-beta.10.3.7**. Replace the full folder, rerun the installer and reboot while idle.
+
+The 10.3.6 recording with 0.001 mm babysteps (−0.120 to −0.127, 57 labels) had a valid automatic zero, 72% eligible readings and 17% unmatched, 97% of those `blocked_by_unverified_command`, not clustered after babysteps. Its drift checks swung between −81 and +80 g, and it had no grams: the shipped config's active `counts_per_gram: 0` line overrode a value added elsewhere in the section (Klipper uses the last one).
+
+- **Steady drift checks.** An in-air moment counts only with at least `drift_min_readings` (3) readings at constant height (±0.02 mm) and speed (±5%, at least 1 mm/s) and an interquartile range up to `drift_max_iqr` (300 counts). A change of more than `drift_max_step` (800 counts) from the last accepted drift must be confirmed by the next steady check. Rejected checks are `zero_drift_rejected` events with the reason.
+- **Why a command is unverified.** The trust check names the first failed check (`conditions_changed`, `epoch_changed`, `nested_command`, `not_indexed`, `command_code`, `no_xy_length`, `speed_factor`, `extrude_factor`, `parameters`, `coordinate_modes`, `speed_or_extrude_factor`, `segment_values`, `feed`, `position_before_X/Y/Z`, `position_after_X/Y/Z`, `extrusion_before/after`, `delta_e`, `unreadable_state`). Blocked readings carry it (`queue_miss` `blocked_by_unverified_command:feed`, ...); `session_end` counts them (`slicer_matching.unverified_commands`).
+- **Shipped settings:** `poll_pause: 0.05` (about 6–7 readings per second) and `counts_per_gram: 52.56` are active in `deep_calibration.cfg`, as the single `counts_per_gram` line of the section. 52.56 was measured on the maintainer's AD5X with a 580 g weight from raw counts; measure your own printer and change it, or set 0.
+
+Software tests: 405 pass with 37 subtests (9 new).
 
 ## Beta 10.3.6: slicer matching at the right times, miss kinds, zero threshold
 

@@ -24,8 +24,8 @@ class Beta10PolicyTests(unittest.TestCase):
 
     def test_poll_start_and_restore_previous_not_hardcoded(self):
         self.start()
-        # 10.2.7: pause 0.1 s and wait 0.05 s while recording, both restored
-        self.assertAlmostEqual(self.c.reader.poll_time, .1, places=6)
+        # 10.3.7: pause 0.05 s and wait 0.05 s while recording, both restored
+        self.assertAlmostEqual(self.c.reader.poll_time, .05, places=6)
         self.assertAlmostEqual(self.c.reader.poll_wait, .05, places=6)
         self.c.cmd_STOP(Command())
         self.assertEqual(self.c.reader.poll_time, .07)
@@ -38,7 +38,7 @@ class Beta10PolicyTests(unittest.TestCase):
         self.assertIsNone(self.c.poll_saved)
 
     def test_poll_pause_and_wait_settings(self):
-        self.assertEqual((self.c.poll_pause, self.c.poll_wait), (.1, .05))
+        self.assertEqual((self.c.poll_pause, self.c.poll_wait), (.05, .05))
         self.c.poll_pause = 0.; self.c.poll_wait = 0.
         self.start()
         self.assertEqual((self.c.reader.poll_time, self.c.reader.poll_wait), (0., 0.))

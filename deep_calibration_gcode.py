@@ -642,10 +642,12 @@ class GcodeContext:
         self.clear_motion()
         self.observation_drops = self.history_drops = 0
         self.miss_counts = {}
+        self.unverified_counts = {}
 
     def match_status(self):
         return dict(observation_drops=self.observation_drops, history_drops=self.history_drops,
-                    phase_misses=dict(getattr(self, 'miss_counts', {})))
+                    phase_misses=dict(getattr(self, 'miss_counts', {})),
+                    unverified_commands=dict(getattr(self, 'unverified_counts', {})))
 
     def _miss(self, start, end, kind):
         # 10.3.6: why a motion phase found no unique G-code line
@@ -707,25 +709,34 @@ class GcodeContext:
 
     @staticmethod
     def verified_command(segment, before, after):
-        if (before[2:4] != after[2:4] or before[2:4] != (
-                segment['absolute_coordinates'], segment['absolute_extrude'])
-                or not finite(after[5]) or after[5] <= 0
-                or not finite(after[6]) or after[6] <= 0 or before[6] != after[6]
-                or not finite(segment['feed']) or not finite(segment['delta_e'])
-                or abs(after[4] / after[5] / 60. - segment['feed']) > 1.e-5):
-            return False
+        return GcodeContext.verify_reason(segment, before, after) is None
+
+    @staticmethod
+    def verify_reason(segment, before, after):
+        # 10.3.7: the same checks as before, naming the first that fails
+        if before[2:4] != after[2:4] or before[2:4] != (segment['absolute_coordinates'], segment['absolute_extrude']):
+            return 'coordinate_modes'
+        if (not finite(after[5]) or after[5] <= 0 or not finite(after[6]) or after[6] <= 0
+                or before[6] != after[6]):
+            return 'speed_or_extrude_factor'
+        if not finite(segment['feed']) or not finite(segment['delta_e']):
+            return 'segment_values'
+        if abs(after[4] / after[5] / 60. - segment['feed']) > 1.e-5:
+            return 'feed'
         for step, key in ((before, 'before'), (after, 'after')):
             pos, base = step[:2]
             expected = segment[key]
             for axis in range(3):
                 target = expected['XYZ'[axis]]
                 if not finite(target) or abs(pos[axis] - base[axis] - target) > 1.e-5:
-                    return False
+                    return 'position_%s_%s' % (key, 'XYZ'[axis])
             if step[2] and step[3]:
                 target_e = expected['E']
                 if not finite(target_e) or abs((pos[3] - base[3]) / step[6] - target_e) > 1.e-5:
-                    return False
-        return abs((after[0][3] - before[0][3]) / after[6] - segment['delta_e']) <= 1.e-5
+                    return 'extrusion_%s' % key
+        if abs((after[0][3] - before[0][3]) / after[6] - segment['delta_e']) > 1.e-5:
+            return 'delta_e'
+        return None
 
     def batch(self, stamps, context):
         """Match native motion phases at receipt times on the reactor tick."""
@@ -751,21 +762,37 @@ class GcodeContext:
         for offset, name, params, stamp, epoch, before, after, nested in self.commands:
             segment = self.snapshot['segments'].get(offset)
             try:
-                valid = (not changed and epoch is self.epoch and not nested and segment
-                         and name == segment['code'] and name in ('G0','G1') and segment.get('xy_length')
-                         and (live['speed_factor'] is None
-                              or abs(after[5] * 60. - live['speed_factor']) <= 1.e-5)
-                         and (live['extrude_factor'] is None
-                              or abs(after[6] - live['extrude_factor']) <= 1.e-5)
-                         and {k: float(v) for k, v in params.items() if k in ('X','Y','Z','E','F','I','J','R','P')}
-                         == segment['parameters'] and self.verified_command(segment, before, after))
+                if changed: reason = 'conditions_changed'
+                elif epoch is not self.epoch: reason = 'epoch_changed'
+                elif nested: reason = 'nested_command'
+                elif not segment: reason = 'not_indexed'
+                elif name != segment['code'] or name not in ('G0', 'G1'): reason = 'command_code'
+                elif not segment.get('xy_length'): reason = 'no_xy_length'
+                elif live['speed_factor'] is not None and abs(after[5] * 60. - live['speed_factor']) > 1.e-5:
+                    reason = 'speed_factor'
+                elif live['extrude_factor'] is not None and abs(after[6] - live['extrude_factor']) > 1.e-5:
+                    reason = 'extrude_factor'
+                elif ({k: float(v) for k, v in params.items() if k in ('X','Y','Z','E','F','I','J','R','P')}
+                      != segment['parameters']):
+                    reason = 'parameters'
+                else:
+                    reason = self.verify_reason(segment, before, after)
             except (TypeError, ValueError, IndexError, KeyError):
-                valid = False
-            if not valid:
-                # An unmatched macro/rewrite can overlap an indexed path.
-                # Keep its geometry as a blocker until it ages out.
-                segment = None
-            self.recent.append((self.mcu.estimated_print_time(stamp), segment, before[0], after[0]))
+                reason = 'unreadable_state'
+            entry_segment = segment if reason is None else None
+            # An unverified command (macro, rewrite, failed check) overlapping
+            # an indexed path is kept as a blocker until it ages out.
+            entry = (self.mcu.estimated_print_time(stamp), entry_segment, before[0], after[0])
+            if reason is not None:
+                counts = getattr(self, 'unverified_counts', None)
+                if counts is None:
+                    counts = self.unverified_counts = {}
+                counts[reason] = counts.get(reason, 0) + 1
+                reasons = getattr(self, 'block_reasons', None)
+                if reasons is None or len(reasons) > 4096:
+                    reasons = self.block_reasons = {}
+                reasons[(entry[0], tuple(entry[2]), tuple(entry[3]))] = reason
+            self.recent.append(entry)
         self.commands.clear()
         if not stamps or not self.recent:
             return
@@ -831,16 +858,17 @@ class GcodeContext:
                     or u * dx + v * dy < -1.e-5
                     or (u + vx) * dx + (v + vy) * dy > norm2 + 1.e-5):
                 continue
-            candidates.append((segment, a, b))
+            candidates.append((segment, a, b, observed))
             if len(candidates) > 1:
                 self.last_miss = 'ambiguous_queue_segment'
                 return None
         if not candidates:
             self.last_miss = 'no_queue_segment'
             return None
-        segment, a, b = candidates[0]
+        segment, a, b, observed = candidates[0]
         if segment is None:
-            self.last_miss = 'blocked_by_unverified_command'
+            why = getattr(self, 'block_reasons', {}).get((observed, tuple(a), tuple(b)))
+            self.last_miss = 'blocked_by_unverified_command' + (':' + why if why else '')
             return None
         return dict(start=start, end=start + dt, segment=segment, source_valid=True,
                     conditions=conditions, native_start=a, native_end=b)

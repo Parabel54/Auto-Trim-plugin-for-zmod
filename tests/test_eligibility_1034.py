@@ -65,7 +65,7 @@ class RecordingPollPauseTests(unittest.TestCase):
         c.writer.thread.join(5)                                    # previous file finished
         self.p.f.feed()
         c.cmd_START(policy.Command(RUN='next', ACCEL=0, ADC=0))
-        self.assertAlmostEqual(c.reader.poll_time, .1)             # back to poll_pause
+        self.assertAlmostEqual(c.reader.poll_time, .05)            # back to poll_pause
         c.cmd_STOP(policy.Command())
 
 

@@ -18,11 +18,11 @@ class ObserverLoadTests(unittest.TestCase):
 
     def test_dispatch_only_buffers_and_batch_checks_native_state(self):
         self.c._status = mock.Mock(side_effect=AssertionError('per-command status'))
-        self.s.verified_command = mock.Mock(return_value=True)
+        self.s.verify_reason = mock.Mock(return_value=None)
         self.observe()
         self.c._status.assert_not_called()
-        self.s.verified_command.assert_not_called()
+        self.s.verify_reason.assert_not_called()
         self.assertEqual(len(self.s.commands), 1)
         self.s.batch([], self.context)
-        self.s.verified_command.assert_called_once()
+        self.s.verify_reason.assert_called_once()
         self.assertFalse(self.s.commands)

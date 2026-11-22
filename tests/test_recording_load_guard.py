@@ -62,7 +62,7 @@ class LoadGuardTests(unittest.TestCase):
         self.assertEqual(end['sensor_capture']['acceleration_suspensions'], 0)
 
     def test_level_five_slows_the_load_cell_and_thins_adc_but_keeps_recording(self):
-        self.assertAlmostEqual(self.reader.poll_time, .1)
+        self.assertAlmostEqual(self.reader.poll_time, .05)
         self.to_level(5)
         self.assertAlmostEqual(self.reader.poll_time, .2)                           # the driver's own pace
         self.capture.adc_report()
@@ -88,7 +88,7 @@ class LoadGuardTests(unittest.TestCase):
         for expected in (5, 4, 3, 2, 1, 0):
             self.recover_one_level()
             self.assertEqual(self.guard.level, expected)
-        self.assertAlmostEqual(self.reader.poll_time, .1)                           # recording pace again
+        self.assertAlmostEqual(self.reader.poll_time, .05)                          # recording pace again
         self.assertEqual(self.cell._tick_interval(), self.cell.interval)
         self.capture.bulk.publish(self.capture.rows(0, 40))
         records = self.capture.end_records()
