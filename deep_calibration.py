@@ -22,7 +22,7 @@ except ImportError:
     from deep_calibration_mesh import DeepCalibrationMesh
     from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.3.7'
+VERSION = '0.1.0-beta.10.3.8'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -226,24 +226,17 @@ class DeepCalibration:
         self.board_period = config.getfloat('board_period', .1, minval=.02, maxval=1.)
         self.last_receipt = None
         # 10.3.5: automatic force zero after the last tare, before the first
-        # layer touches, and drift tracked whenever the nozzle is in the air
+        # layer touches. (Drift checks from in-air moments, 10.3.5-10.3.7, were
+        # removed in 10.3.8: during printing the toolhead's acceleration
+        # scattered in-air readings between -70 and +200 g.)
         self.auto_zero = config.getboolean('auto_zero', True)
         self.auto_zero_max_iqr = config.getfloat('auto_zero_max_iqr', 500., minval=10.)
         # 10.3.6: the window between the re-tare and the first extrusion is
         # about 2 s; 10 readings over 2 s missed by one on an AD5X
         self.auto_zero_min_readings = config.getint('auto_zero_min_readings', 6, minval=3)
         self.auto_zero_min_span = config.getfloat('auto_zero_min_span', 1., minval=.2)
-        # 10.3.7: a drift check counts only for a steady moment in the air;
-        # 10.3.6's checks swung between -81 and +80 g on an AD5X
-        self.drift_min_readings = config.getint('drift_min_readings', 3, minval=2)
-        self.drift_max_iqr = config.getfloat('drift_max_iqr', 300., minval=10.)
-        self.drift_max_step = config.getfloat('drift_max_step', 800., minval=10.)
-        self.drift_pending = None
         self.zero_candidates = collections.deque(maxlen=200)
         self.auto_zero_closed = False
-        self.zero_drift = None
-        self.air_cluster = []
-        self.printing_z = collections.deque(maxlen=50)
         self.sequence = self.dropped = 0
         self.reader = self.original = self.wrapper = None
         self.source = None
@@ -774,7 +767,6 @@ class DeepCalibration:
             if self.active and stamp >= self.started:
                 baseline_ok = self.baseline is not None and self.baseline['generation'] == generation and abs(grams)<=5120
                 delta = filtered['filtered_raw']-self.baseline['raw'] if baseline_ok else None
-                drift = self.zero_drift['counts'] if baseline_ok and self.zero_drift is not None else None
                 shaper_frequencies = [float(v['shaper_freq']) for v in context['shaper'].values()
                                       if v.get('shaper_freq') is not None and float(v['shaper_freq'])>0]
                 live = motion.get('live_position')
@@ -794,10 +786,6 @@ class DeepCalibration:
                                  acquisition_t=acquired, acquisition_uncertainty_s=acquired_uncertainty,
                                  motion_at_acquisition=motion,
                                  baseline_kind=self.baseline.get('kind') if baseline_ok else None,
-                                 zero_drift_counts=drift,
-                                 zero_drift_age_s=(stamp - self.zero_drift['t']) if drift is not None else None,
-                                 filtered_delta_counts_drift_corrected=(delta - drift) if delta is not None and drift is not None else None,
-                                 filtered_grams_drift_corrected=((delta - drift) / self.cpg) if delta is not None and drift is not None and self.cpg else None,
                                  mesh_interpolation_at_receipt=interpolation,
                                  shaper_resolvable=bool(shaper_frequencies and filtered['nyquist_hz']
                                      and max(shaper_frequencies)<.4*(filtered['rate_hz'] or 0)),
@@ -813,25 +801,15 @@ class DeepCalibration:
     def _zero_observe(self, t, raw, grams, generation, motion):
         if motion is None:
             return
-        ev = motion.get('live_extruder_velocity'); pos = motion.get('live_position')
-        z = pos[2] if isinstance(pos, (list, tuple)) and len(pos) > 2 and finite(pos[2]) else None
+        if self.auto_zero_closed:
+            return
+        ev = motion.get('live_extruder_velocity')
         if self.active and finite(ev) and ev > .05:
             # extruding: the first layer touches; the zero window closes
-            if z is not None:
-                self.printing_z.append(z)
-            if not self.auto_zero_closed:
-                self._auto_zero(t, generation)
-            self._close_air_cluster()
+            self._auto_zero(t, generation)
             return
         if finite(ev) and abs(ev) < .01 and abs(grams) <= 5120:
-            if not self.auto_zero_closed:
-                self.zero_candidates.append((t, raw, generation))
-            elif (self.active and z is not None and self.printing_z
-                    and z > statistics.median(self.printing_z) + .15):
-                speed = motion.get('live_velocity')
-                self.air_cluster.append((t, raw, z, speed if finite(speed) else None))   # nozzle in the air
-                return
-        self._close_air_cluster()
+            self.zero_candidates.append((t, raw, generation))
 
     def _auto_zero(self, t, generation):
         self.auto_zero_closed = True
@@ -849,39 +827,6 @@ class DeepCalibration:
         self.baseline = dict(t=c[-1][0], raw=statistics.median(raws), generation=generation,
                              kind='auto_after_tare', readings=len(c), span_s=c[-1][0] - c[0][0], iqr_counts=iqr)
         self._event('baseline', baseline=self.baseline)
-
-    def _close_air_cluster(self):
-        cluster, self.air_cluster = self.air_cluster, []
-        if not cluster or self.baseline is None:
-            return
-        raws = sorted(c[1] for c in cluster)
-        counts = statistics.median(raws) - self.baseline['raw']
-        zs = [c[2] for c in cluster]
-        speeds = [c[3] for c in cluster if c[3] is not None]
-        reason = None
-        if len(cluster) < self.drift_min_readings:
-            reason = 'too_few_readings'
-        elif max(zs) - min(zs) > .02:
-            reason = 'height_changing'
-        elif speeds and max(speeds) - min(speeds) > max(1., .05 * statistics.median(speeds)):
-            reason = 'speed_changing'
-        elif raws[3 * len(raws) // 4] - raws[len(raws) // 4] > self.drift_max_iqr:
-            reason = 'scatter'
-        else:
-            previous = self.zero_drift['counts'] if self.zero_drift is not None else 0.
-            if abs(counts - previous) > self.drift_max_step:
-                # a large jump needs the next steady check to agree
-                if self.drift_pending is not None and abs(counts - self.drift_pending) <= self.drift_max_iqr:
-                    self.drift_pending = None
-                else:
-                    self.drift_pending = counts
-                    reason = 'jump_unconfirmed'
-        if reason is not None:
-            self._event('zero_drift_rejected', reason=reason, counts=counts, readings=len(cluster))
-            return
-        self.drift_pending = None
-        self.zero_drift = dict(t=cluster[-1][0], counts=counts, readings=len(cluster))
-        self._event('zero_drift', measured_t=self.zero_drift['t'], counts=counts, readings=len(cluster))
 
     def _flush_force_tail(self):
         if not self.active:return
@@ -1555,10 +1500,6 @@ class DeepCalibration:
         self.seen_printing = False
         self.session_dropped = self.dropped
         self.auto_zero_closed = False
-        self.zero_drift = None
-        self.drift_pending = None
-        self.air_cluster = []
-        self.printing_z.clear()
         self.active = True
         self.last_signature = None
         self.signal.reset()

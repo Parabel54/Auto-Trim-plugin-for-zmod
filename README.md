@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.3.7 (2026-11-22). **Development continuation of beta 10.3.6.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
+Version 0.1.0-beta.10.3.8 (2026-11-23). **Development continuation of beta 10.3.7.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
 
 ## Contents
 
@@ -188,6 +188,19 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 **By hand:** `DEEP_CALIBRATION_MARK LABEL=<label> NOTE="..."` during a recording. Labels: `GOOD`, `TOO_HIGH`, `TOO_LOW`, `TRAVEL`, `TRANSITION` and `UNLABELLED`. `DC_MARK_GOOD` is a shortcut for `GOOD`, handy as a screen button. A label you set by hand after the last babystep is kept: the automatic `GOOD` at layer 2 does not replace it.
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
+
+## Beta 10.3.8: long lines no longer block their own readings; in-air drift checks removed
+
+Current continuation: **0.1.0-beta.10.3.8**. Replace the full folder, rerun the installer and reboot while idle.
+
+In the 10.3.7 AD5X recording (15 mm/s, Monotonic line bottom surface), 30% of readings had no matched line; 2803 of them were `blocked_by_unverified_command` with no reason, and every unverified finished command had one. The blockers came from commands still in progress: when a line's move is longer than Klipper's queue (about 2 s), its G1 handler waits inside the queue while the line already prints, and the matcher turned every in-progress command into a blocker without a G-code line, so a long line blocked its own readings.
+
+- **In-progress commands are checked like finished ones.** Klipper sets the target position and speed before the handler waits, so the same trust check applies: trusted, the line is a candidate and its readings match while it prints; otherwise it blocks with its reason (`in_progress:<check>`), counted in `slicer_matching.unverified_commands`. One trust check now serves both.
+- **In-air drift checks removed** (10.3.5–10.3.7). In that recording all 48 in-air moments were too short (1–2 readings), and their readings scattered between −70 and +200 g within minutes: during printing the toolhead's accelerations dominate. The `zero_drift*` events and drift-corrected fields are gone; the automatic zero after the tare stays.
+
+That recording also showed, at a constant −0.126, the force rising from about 4 g to 40 g over the first 16 minutes, following time rather than position, with the user judging the first layer progressively too low and settling on −0.120: most likely the plate rising as the printer kept warming during a 25-minute first layer.
+
+Software tests: 403 pass with 37 subtests.
 
 ## Beta 10.3.7: steady drift checks, why commands are unverified, shipped settings
 

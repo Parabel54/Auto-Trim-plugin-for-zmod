@@ -676,7 +676,7 @@ class GcodeContext:
             self.commands.clear()
             self.recent.clear()
             return original(gcmd)
-        self.in_progress.append((stamp, before[0]))
+        self.in_progress.append((stamp, before[0], offset, name, params, epoch, before))
         try:
             result = original(gcmd)
         except BaseException:
@@ -738,6 +738,62 @@ class GcodeContext:
             return 'delta_e'
         return None
 
+    def _command_reason(self, changed, live, offset, name, params, epoch, before, after, nested):
+        """(segment, None) for a trusted command, (segment, reason) otherwise."""
+        segment = self.snapshot['segments'].get(offset)
+        try:
+            if changed: return segment, 'conditions_changed'
+            if epoch is not self.epoch: return segment, 'epoch_changed'
+            if nested: return segment, 'nested_command'
+            if not segment: return segment, 'not_indexed'
+            if name != segment['code'] or name not in ('G0', 'G1'): return segment, 'command_code'
+            if not segment.get('xy_length'): return segment, 'no_xy_length'
+            if live['speed_factor'] is not None and abs(after[5] * 60. - live['speed_factor']) > 1.e-5:
+                return segment, 'speed_factor'
+            if live['extrude_factor'] is not None and abs(after[6] - live['extrude_factor']) > 1.e-5:
+                return segment, 'extrude_factor'
+            if ({k: float(v) for k, v in params.items() if k in ('X','Y','Z','E','F','I','J','R','P')}
+                    != segment['parameters']):
+                return segment, 'parameters'
+            return segment, self.verify_reason(segment, before, after)
+        except (TypeError, ValueError, IndexError, KeyError):
+            return segment, 'unreadable_state'
+
+    def _block(self, entry, reason):
+        counts = getattr(self, 'unverified_counts', None)
+        if counts is None:
+            counts = self.unverified_counts = {}
+        counts[reason] = counts.get(reason, 0) + 1
+        reasons = getattr(self, 'block_reasons', None)
+        if reasons is None or len(reasons) > 4096:
+            reasons = self.block_reasons = {}
+        reasons[(entry[0], tuple(entry[2]), tuple(entry[3]))] = reason
+
+    def _inflight(self, changed, live):
+        # 10.3.7+: a long line's G1 handler waits in Klipper's move queue while
+        # the line already prints. Its position and speed are already set, so
+        # it is checked like a finished command: trusted, it is a candidate;
+        # otherwise it blocks, with its reason.
+        entries = []
+        for index, item in enumerate(self.in_progress):
+            t, a = item[0], item[1]
+            b = self.gm.last_position[:4]
+            segment, reason = None, 'in_progress'
+            if len(item) >= 7:
+                offset, name, params, epoch, before = item[2:7]
+                try:
+                    after = self.checkpoint(self.gm)
+                    b = after[0]
+                    segment, reason = self._command_reason(changed, live, offset, name, params, epoch,
+                                                           before, after, index > 0)
+                except Exception:
+                    segment, reason = None, 'unreadable_state'
+            entry = (self.mcu.estimated_print_time(t), segment if reason is None else None, a, b)
+            if reason is not None:
+                self._block(entry, 'in_progress:' + reason)
+            entries.append(entry)
+        return entries
+
     def batch(self, stamps, context):
         """Match native motion phases at receipt times on the reactor tick."""
         if not (self.owner.active and self.handlers and self.state == 'ready' and self.snapshot):
@@ -760,38 +816,13 @@ class GcodeContext:
             self.recent.clear()
             return
         for offset, name, params, stamp, epoch, before, after, nested in self.commands:
-            segment = self.snapshot['segments'].get(offset)
-            try:
-                if changed: reason = 'conditions_changed'
-                elif epoch is not self.epoch: reason = 'epoch_changed'
-                elif nested: reason = 'nested_command'
-                elif not segment: reason = 'not_indexed'
-                elif name != segment['code'] or name not in ('G0', 'G1'): reason = 'command_code'
-                elif not segment.get('xy_length'): reason = 'no_xy_length'
-                elif live['speed_factor'] is not None and abs(after[5] * 60. - live['speed_factor']) > 1.e-5:
-                    reason = 'speed_factor'
-                elif live['extrude_factor'] is not None and abs(after[6] - live['extrude_factor']) > 1.e-5:
-                    reason = 'extrude_factor'
-                elif ({k: float(v) for k, v in params.items() if k in ('X','Y','Z','E','F','I','J','R','P')}
-                      != segment['parameters']):
-                    reason = 'parameters'
-                else:
-                    reason = self.verify_reason(segment, before, after)
-            except (TypeError, ValueError, IndexError, KeyError):
-                reason = 'unreadable_state'
+            segment, reason = self._command_reason(changed, live, offset, name, params, epoch, before, after, nested)
             entry_segment = segment if reason is None else None
             # An unverified command (macro, rewrite, failed check) overlapping
             # an indexed path is kept as a blocker until it ages out.
             entry = (self.mcu.estimated_print_time(stamp), entry_segment, before[0], after[0])
             if reason is not None:
-                counts = getattr(self, 'unverified_counts', None)
-                if counts is None:
-                    counts = self.unverified_counts = {}
-                counts[reason] = counts.get(reason, 0) + 1
-                reasons = getattr(self, 'block_reasons', None)
-                if reasons is None or len(reasons) > 4096:
-                    reasons = self.block_reasons = {}
-                reasons[(entry[0], tuple(entry[2]), tuple(entry[3]))] = reason
+                self._block(entry, reason)
             self.recent.append(entry)
         self.commands.clear()
         if not stamps or not self.recent:
@@ -813,8 +844,7 @@ class GcodeContext:
             return
         phases = iter(rows)
         phase = next(phases, None)
-        inflight = [(self.mcu.estimated_print_time(t), None, a, self.gm.last_position[:4])
-                    for t, a in self.in_progress]
+        inflight = self._inflight(changed, live)
         for clock in sorted(set(clocks)):
             while phase is not None and phase.print_time + phase.move_t <= clock:
                 phase = next(phases, None)

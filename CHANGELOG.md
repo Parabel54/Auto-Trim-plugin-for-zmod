@@ -1,3 +1,9 @@
+# 0.1.0-beta.10.3.8 — long lines no longer block their own readings; in-air drift checks removed (2026-11-23)
+
+- In-progress commands (a long line's G1 handler waiting in Klipper's move queue while the line prints) go through the same trust check as finished ones: trusted, they are match candidates; otherwise they block with `in_progress:<check>`. They were reasonless blockers: 2803 of a recording's unmatched readings.
+- In-air drift checks removed: in-air readings during printing scattered between -70 and +200 g.
+- 403 software tests +37 subtests pass.
+
 # 0.1.0-beta.10.3.7 — steady drift checks, why commands are unverified, shipped settings (2026-11-22)
 
 - Drift checks only for steady in-air moments (readings, height, speed, scatter); large jumps need confirmation; `zero_drift_rejected` events. 10.3.6 checks swung between -81 and +80 g.

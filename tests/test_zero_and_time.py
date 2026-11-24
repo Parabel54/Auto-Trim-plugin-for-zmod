@@ -1,4 +1,4 @@
-# 10.3.5: automatic force zero after the last tare, drift from in-air moments,
+# 10.3.5: automatic force zero after the last tare (in-air drift removed in 10.3.8),
 # and each reading's estimated measurement time with its uncertainty.
 import types
 import unittest
@@ -59,20 +59,17 @@ class ZeroAndTimeTests(unittest.TestCase):
         self.assertFalse(any(e['event'] == 'baseline' for e in events))
         self.assertIsNone(samples[-1]['filtered_grams'])
 
-    def test_drift_from_in_air_moments(self):
+    def test_in_air_moments_no_longer_change_anything(self):
+        # 10.3.8: drift checks from in-air moments were removed
         self.f.feed(); self.c.cmd_START(Command(RUN='first'))
         self.run_readings(14, 8000000, z=1.0, ev=0.)
         self.run_readings(8, 8000500, z=.2, ev=1.)
-        self.run_readings(4, 8000300, z=.6, ev=0.)                   # Z-hop travel: zero moved by about +300
-        self.run_readings(6, 8000800, z=.2, ev=1.)
+        self.run_readings(4, 8004000, z=.6, ev=0.)                   # Z-hop travel
+        self.run_readings(6, 8000500, z=.2, ev=1.)
         records, samples, events = self.log()
-        drift = [e for e in events if e['event'] == 'zero_drift']
-        self.assertEqual(len(drift), 1)
-        self.assertAlmostEqual(drift[0]['counts'], 300, delta=30)
-        last = samples[-1]
-        self.assertAlmostEqual(last['zero_drift_counts'], drift[0]['counts'])
-        self.assertAlmostEqual(last['filtered_delta_counts_drift_corrected'],
-                               last['filtered_delta_counts'] - last['zero_drift_counts'])
+        self.assertFalse(any(e['event'] in ('zero_drift', 'zero_drift_rejected') for e in events))
+        self.assertFalse(any(k.startswith('zero_drift') or 'drift_corrected' in k for k in samples[-1]))
+        self.assertEqual(samples[-1]['baseline_kind'], 'auto_after_tare')
 
     def test_extruding_or_moving_down_readings_never_become_the_zero(self):
         self.f.feed(); self.c.cmd_START(Command(RUN='first'))

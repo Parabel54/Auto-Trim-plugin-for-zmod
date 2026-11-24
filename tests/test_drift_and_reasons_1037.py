@@ -1,4 +1,4 @@
-# 10.3.7: steady drift checks with confirmation, the reason for each
+# 10.3.7: the reason for each
 # unverified command, and the shipped settings (one counts_per_gram line).
 import collections
 import configparser
@@ -61,44 +61,6 @@ class VerifyReasonTests(unittest.TestCase):
         self.assertIsNone(src.match_phase(phase, {}))
         self.assertEqual(src.last_miss, 'blocked_by_unverified_command:feed')
 
-
-class SteadyDriftTests(unittest.TestCase):
-    def setUp(self):
-        self.z = zero_fixture.ZeroAndTimeTests('test_measurement_time_window'); self.z.setUp(); self.addCleanup(self.z.doCleanups)
-        self.z.f.feed(); self.z.c.cmd_START(Command(RUN='first'))
-        self.z.run_readings(8, 8000000, z=1.0, ev=0.)        # zero
-        self.z.run_readings(6, 8000500, z=.2, ev=1.)         # printing height known
-
-    def events(self):
-        return [e for e in self.z.log()[2] if e['event'] in ('zero_drift', 'zero_drift_rejected')]
-
-    def test_single_reading_is_not_a_check(self):
-        self.z.run_readings(1, 8004000, z=.6, ev=0.); self.z.run_readings(2, 8000500, z=.2, ev=1.)
-        self.assertEqual([(e['event'], e.get('reason')) for e in self.events()], [('zero_drift_rejected', 'too_few_readings')])
-
-    def test_changing_height_is_not_a_check(self):
-        self.z.run_readings(2, 8000300, z=.6, ev=0.); self.z.run_readings(2, 8000300, z=.9, ev=0.)
-        self.z.run_readings(2, 8000500, z=.2, ev=1.)
-        self.assertEqual(self.events()[0]['reason'], 'height_changing')
-
-    def test_scattered_readings_are_not_a_check(self):
-        for raw in (8000000, 8003000, 7997000, 8002000):
-            self.z.run_readings(1, raw, z=.6, ev=0.)
-        self.z.run_readings(2, 8000500, z=.2, ev=1.)
-        self.assertEqual(self.events()[0]['reason'], 'scatter')
-
-    def test_large_jump_needs_confirmation(self):
-        self.z.run_readings(4, 8004000, z=.6, ev=0.); self.z.run_readings(2, 8000500, z=.2, ev=1.)
-        self.z.run_readings(4, 8004000, z=.6, ev=0.); self.z.run_readings(2, 8000500, z=.2, ev=1.)
-        ev = self.events()
-        self.assertEqual((ev[0]['event'], ev[0].get('reason')), ('zero_drift_rejected', 'jump_unconfirmed'))
-        self.assertEqual(ev[1]['event'], 'zero_drift')
-        self.assertAlmostEqual(ev[1]['counts'], 4000, delta=40)
-
-    def test_small_steady_drift_is_accepted(self):
-        self.z.run_readings(4, 8000300, z=.6, ev=0.); self.z.run_readings(2, 8000500, z=.2, ev=1.)
-        ev = self.events()
-        self.assertEqual(ev[0]['event'], 'zero_drift'); self.assertAlmostEqual(ev[0]['counts'], 300, delta=40)
 
 
 if __name__ == '__main__':
