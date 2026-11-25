@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.3.8 (2026-11-23). **Development continuation of beta 10.3.7.** Used together with [Auto Trim for zMod](https://github.com/Parabel54/Auto-Trim-plugin-for-zmod) 3.9.12 or newer.
+Version 0.1.0-beta.10.3.9 (2026-11-25). **Development continuation of beta 10.3.8.**
 
 ## Contents
 
@@ -188,6 +188,18 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 **By hand:** `DEEP_CALIBRATION_MARK LABEL=<label> NOTE="..."` during a recording. Labels: `GOOD`, `TOO_HIGH`, `TOO_LOW`, `TRAVEL`, `TRANSITION` and `UNLABELLED`. `DC_MARK_GOOD` is a shortcut for `GOOD`, handy as a screen button. A label you set by hand after the last babystep is kept: the automatic `GOOD` at layer 2 does not replace it.
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
+
+## Beta 10.3.9: the load cell's own creep is subtracted
+
+Current continuation: **0.1.0-beta.10.3.9**. Replace the full folder, rerun the installer and reboot while idle.
+
+At a fixed offset, AD5X first layers showed the force rising about 2.4 g per minute (−0.126 for 16 minutes; −0.111 for 25 minutes, judged GOOD throughout). A 25-minute idle recording with nothing touching (bed at 60 °C, nozzle cold and parked 5 mm up, right after `LOAD_CELL_TARE`) showed the load cell's own creep: a recovery of 14.9 g with a time constant of 0.5 minutes, then 0.81 g per minute (fit misfit 2.1 g). So about 0.8 of the 2.4 g per minute is the sensor; the rest happens only while printing.
+
+- **Creep compensation:** creep(t) = `creep_recovery_g` × (1 − e^(−t/`creep_tau`)) + `creep_rate` × t, t in minutes since the last tare. The zero already holds the creep up to when it was taken, so each reading's correction is creep(now) − creep(at the zero). Readings carry `creep_correction_g`, `time_since_tare_s` and `filtered_grams_creep_corrected` next to `filtered_grams`.
+- **The tare's time** comes from the load-cell driver's command counter (it advances on every tare) and is tracked for every reading, recording or not: Auto Trim re-tares during print preparation.
+- The config ships the maintainer's measured values (`creep_recovery_g: 14.9`, `creep_tau: 0.5`, `creep_rate: 0.81`); measure your own printer with an idle recording after `LOAD_CELL_TARE`, or set them to 0.
+
+Software tests: 408 pass with 37 subtests (5 new).
 
 ## Beta 10.3.8: long lines no longer block their own readings; in-air drift checks removed
 

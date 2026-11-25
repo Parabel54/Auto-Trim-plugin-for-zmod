@@ -22,7 +22,7 @@ except ImportError:
     from deep_calibration_mesh import DeepCalibrationMesh
     from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.3.8'
+VERSION = '0.1.0-beta.10.3.9'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -212,6 +212,15 @@ class DeepCalibration:
         if not finite(self.interval) or not finite(self.tau):
             raise config.error('deep_calibration: context_interval and filter_tau must be finite')
         self.cpg = config.getfloat('counts_per_gram', 0.)
+        # 10.3.9: the load cell's own creep after a tare, measured with
+        # nothing touching: a recovery of creep_recovery_g with time constant
+        # creep_tau (minutes), then a steady creep_rate (g per minute).
+        # 0 disables. Readings get creep-corrected force next to the plain one.
+        self.creep_recovery = config.getfloat('creep_recovery_g', 0., minval=0., maxval=500.)
+        self.creep_tau = config.getfloat('creep_tau', .5, above=0., maxval=60.)
+        self.creep_rate = config.getfloat('creep_rate', 0., minval=-50., maxval=50.)
+        self.tare_generation = None
+        self.tare_t = None
         if not finite(self.cpg):
             raise config.error('deep_calibration: counts_per_gram must be finite')
         self.part_fan = config.get('part_fan', 'fan_generic fanM106')
@@ -721,6 +730,11 @@ class DeepCalibration:
     def _drain_force(self,pending,now,context):
         attributed_start = len(pending) - 16
         for index, (sequence, stamp, raw, grams, generation) in enumerate(pending):
+            if generation != self.tare_generation:
+                # a new tare (the driver's command counter moved): creep
+                # restarts. Tracked for every reading, recording or not:
+                # Auto Trim re-tares during print preparation.
+                self.tare_generation, self.tare_t = generation, stamp
             # Keep raw data exact. Context is taken on the reactor thread
             # and deliberately has a separate timestamp/id and lag field.
             filtered = self.signal.feed(stamp, raw, generation)
@@ -767,6 +781,7 @@ class DeepCalibration:
             if self.active and stamp >= self.started:
                 baseline_ok = self.baseline is not None and self.baseline['generation'] == generation and abs(grams)<=5120
                 delta = filtered['filtered_raw']-self.baseline['raw'] if baseline_ok else None
+                creep = self._creep_since_zero(stamp) if baseline_ok and self.cpg else None
                 shaper_frequencies = [float(v['shaper_freq']) for v in context['shaper'].values()
                                       if v.get('shaper_freq') is not None and float(v['shaper_freq'])>0]
                 live = motion.get('live_position')
@@ -781,6 +796,9 @@ class DeepCalibration:
                                  baseline_raw=self.baseline['raw'] if baseline_ok else None,
                                  filtered_delta_counts=delta,
                                  filtered_grams=delta/self.cpg if delta is not None and self.cpg else None,
+                                 creep_correction_g=creep,
+                                 time_since_tare_s=(stamp - self.tare_t) if self.tare_t is not None else None,
+                                 filtered_grams_creep_corrected=(delta/self.cpg - creep) if delta is not None and self.cpg and creep is not None else None,
                                  counts_per_gram=self.cpg or None,
                                  motion_at_receipt=motion_at_receipt, slicer_context=gate,
                                  acquisition_t=acquired, acquisition_uncertainty_s=acquired_uncertainty,
@@ -790,6 +808,20 @@ class DeepCalibration:
                                  shaper_resolvable=bool(shaper_frequencies and filtered['nyquist_hz']
                                      and max(shaper_frequencies)<.4*(filtered['rate_hz'] or 0)),
                                  **filtered))
+
+    def _creep_model(self, minutes):
+        return self.creep_recovery * (1. - math.exp(-minutes / self.creep_tau)) + self.creep_rate * minutes
+
+    def _creep_since_zero(self, stamp):
+        # The zero already holds the creep up to when it was taken, so a
+        # reading's correction is creep(now) - creep(at the zero)
+        if self.tare_t is None or not (self.creep_recovery or self.creep_rate):
+            return None
+        zero_t = self.baseline.get('t') if self.baseline else None
+        if zero_t is None or zero_t < self.tare_t:
+            return None
+        return (self._creep_model(max(0., stamp - self.tare_t) / 60.)
+                - self._creep_model(max(0., zero_t - self.tare_t) / 60.))
 
     def _acquisition(self, stamp, previous):
         # the board's conversion: after the previous reply, at most one board
