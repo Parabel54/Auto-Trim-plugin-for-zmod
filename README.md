@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.3.11 (2026-11-25). **Development continuation of beta 10.3.10.**
+Version 0.1.0-beta.10.3.12 (2026-11-26). **Development continuation of beta 10.3.11.**
 
 ## Contents
 
@@ -188,6 +188,18 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 **By hand:** `DEEP_CALIBRATION_MARK LABEL=<label> NOTE="..."` during a recording. Labels: `GOOD`, `TOO_HIGH`, `TOO_LOW`, `TRAVEL`, `TRANSITION` and `UNLABELLED`. `DC_MARK_GOOD` is a shortcut for `GOOD`, handy as a screen button. A label you set by hand after the last babystep is kept: the automatic `GOOD` at layer 2 does not replace it.
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
+
+## Beta 10.3.12: the zero from the tare itself; contact-band vibration
+
+Current continuation: **0.1.0-beta.10.3.12**. Replace the full folder, rerun the installer and reboot while idle.
+
+Two AD5X prints on 26 November (50 mm/s, −0.121 GOOD both times): in the first, the automatic zero failed (8 readings over 1.45 s after Auto Trim's re-tare, spread 682 counts, "unsteady"); in the second it succeeded (10 readings, 470 counts) but the first 4 minutes read about 20 g low, then settled, with no change at the nozzle. The window between the re-tare and the first extrusion is about 2 s of unsettled readings.
+
+- **Zero from the tare reply.** zMod's load cell driver answers a tare with the board's raw reading at that instant (`H1 > command H1 ok. 8282914`). Deep Calibration takes it from the console and, at the first extrusion, uses it as the zero if no re-tare has happened since (`baseline` kind `board_tare`). Otherwise the settling window as before; a manual `DEEP_CALIBRATION_ZERO` still takes precedence.
+- **Two creep clocks:** the settling (`creep_recovery_g`, `creep_tau`) counts from the tare, the warm-up drift (`creep_rate`, `creep_slow_tau`) from the bed's warm-up; each applies when its moment is known.
+- **`contact_vibration.py`** (analysis on a computer, needs numpy): the toolhead accelerometer is dominated by the motors' stepping tones (each CoreXY motor's belt speed / 0.2 mm per full step; 289 and 203 Hz for 80° lines at 50 mm/s) and by the frame resonances (the shaper frequencies, e.g. 61 and 57.6 Hz). Per eligible reading it removes both (and the tones' second harmonics) from a 1024-frame Blackman-Harris window and reports the vibration left in 2–40 Hz per axis, by offset, optionally to CSV: `python3 contact_vibration.py RECORDING.jsonl --csv out.csv`. On both prints the Z contact band stayed at 13–14 mm/s² whatever the force (likely the sensor's noise floor): force differences of tens of grams do not show in the accelerometer.
+
+Software tests: 423 pass with 37 subtests (8 new: 4 for the tare zero, 4 for the vibration tool with signals 100x larger than the contact signal).
 
 ## Beta 10.3.11: the warm-up time from Auto Trim's soak
 

@@ -9,6 +9,50 @@ from test_capture import Command
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+class TareZeroTests(unittest.TestCase):
+    # 10.3.12: the zero comes from the board's reading at the tare
+    def setUp(self):
+        self.z = zero_fixture.ZeroAndTimeTests('test_measurement_time_window'); self.z.setUp(); self.addCleanup(self.z.doCleanups)
+        self.c = self.z.c
+
+    def tare_with_reply(self, raw):
+        self.z.f.reader._command_id += 1
+        self.c._auto_trim_output('H1 > command H1 ok. %d' % raw)
+
+    def test_zero_from_the_tare_reply(self):
+        self.z.f.feed()
+        self.tare_with_reply(8001000)
+        self.c.cmd_START(Command(RUN='first'))
+        self.z.run_readings(2, 8003000, z=1.0, ev=0.)                    # only 2 unsettled readings: no window zero possible
+        self.z.run_readings(6, 8001526, z=.2, ev=1.)
+        records, samples, events = self.z.log()
+        base = [e for e in events if e['event'] == 'baseline'][0]['baseline']
+        self.assertEqual(base['kind'], 'board_tare'); self.assertEqual(base['raw'], 8001000.)
+        self.assertTrue(samples[-1]['baseline_valid']); self.assertIsNotNone(samples[-1]['filtered_grams'])
+
+    def test_a_later_tare_without_reply_is_not_paired_with_the_old_reply(self):
+        self.z.f.feed()
+        self.tare_with_reply(8001000)
+        self.z.f.reader._command_id += 1                                 # another tare, its reply not seen
+        self.c.cmd_START(Command(RUN='first'))
+        self.z.run_readings(10, 8000000, z=1.0, ev=0.); self.z.run_readings(3, 8000526, z=.2, ev=1.)
+        base = [e for e in self.z.log()[2] if e['event'] == 'baseline'][0]['baseline']
+        self.assertEqual(base['kind'], 'auto_after_tare')                # the settling window, as before
+
+    def test_manual_zero_still_takes_precedence(self):
+        self.z.f.feed()
+        self.tare_with_reply(8001000)
+        self.c.baseline = dict(t=self.z.f.reactor.now, raw=7999000, generation=self.z.f.reader._command_id, kind='software_idle_reference_not_board_tare')
+        self.c.cmd_START(Command(RUN='first'))
+        self.z.run_readings(10, 8000000, z=1.0, ev=0.); self.z.run_readings(3, 8000526, z=.2, ev=1.)
+        self.assertEqual(self.z.log()[1][-1]['baseline_kind'], 'software_idle_reference_not_board_tare')
+
+    def test_other_console_lines_do_not_count(self):
+        self.c._auto_trim_output('// N 1. Weight: 0.0')
+        self.c._auto_trim_output('// Cell Tare: OK. Weight: 0.0->0.0')
+        self.assertIsNone(self.c.tare_zero)
+
+
 class CreepTests(unittest.TestCase):
     def setUp(self):
         self.z = zero_fixture.ZeroAndTimeTests('test_measurement_time_window'); self.z.setUp(); self.addCleanup(self.z.doCleanups)
@@ -29,15 +73,19 @@ class CreepTests(unittest.TestCase):
         self.bed.update(temperature=59.5); self.z.f.feed()
         self.assertIsNotNone(self.c.bed_warm_t)
 
-    def test_bed_already_hot_when_first_seen_means_no_correction(self):
+    def test_bed_already_hot_when_first_seen_corrects_only_the_settling(self):
+        # 10.3.12: the warm-up is unknown, but the tare is known: only the
+        # settling after the tare is corrected
         self.z.f.feed()                                                   # fixture bed: 60 of 60 from the start
         self.assertIsNone(self.c.bed_warm_t)
+        tare_t = self.c.tare_t
         self.c.cmd_START(Command(RUN='first'))
         self.z.run_readings(10, 8000000, z=1.0, ev=0.); self.z.run_readings(4, 8000526, z=.2, ev=1.)
-        last = self.z.log()[1][-1]
-        self.assertIsNotNone(last['filtered_grams']); self.assertIsNone(last['creep_correction_g'])
-
-    def test_correction_counts_from_bed_warm_up_not_from_the_tare(self):
+        records, samples, events = self.z.log()
+        last = samples[-1]; zero_t = [e for e in events if e['event'] == 'baseline'][0]['baseline']['t']
+        expected = self.c._creep_fast((last['t'] - tare_t) / 60.) - self.c._creep_fast((zero_t - tare_t) / 60.)
+        self.assertAlmostEqual(last['creep_correction_g'], expected, places=6)
+    def test_settling_from_the_tare_and_drift_from_the_warm_up(self):
         self.heat_up(); warm = self.c.bed_warm_t
         self.z.run_readings(40, 8000000, z=1.0, ev=0., step=1.5)          # a minute warm before the tare
         self.tare(); self.z.run_readings(1, 8000000, z=1.0, ev=0.)
@@ -45,7 +93,9 @@ class CreepTests(unittest.TestCase):
         self.z.run_readings(10, 8000000, z=1.0, ev=0.); self.z.run_readings(12, 8000526, z=.2, ev=1.)
         records, samples, events = self.z.log()
         last = samples[-1]; zero_t = [e for e in events if e['event'] == 'baseline'][0]['baseline']['t']
-        expected = self.c._creep_model((last['t'] - warm) / 60.) - self.c._creep_model((zero_t - warm) / 60.)
+        tare_t = self.c.tare_t
+        expected = (self.c._creep_fast((last['t'] - tare_t) / 60.) - self.c._creep_fast((zero_t - tare_t) / 60.)
+                    + self.c._creep_slow((last['t'] - warm) / 60.) - self.c._creep_slow((zero_t - warm) / 60.))
         self.assertAlmostEqual(last['creep_correction_g'], expected, places=6)
         self.assertAlmostEqual(last['filtered_grams_creep_corrected'], last['filtered_grams'] - expected, places=6)
         self.assertAlmostEqual(last['time_since_bed_warm_s'], last['t'] - warm, places=6)

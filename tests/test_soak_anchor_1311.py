@@ -52,7 +52,9 @@ class SoakAnchorTests(unittest.TestCase):
         last = samples[-1]
         self.assertEqual(last['bed_warm_source'], 'auto_trim_soak')
         zero_t = [e for e in events if e['event'] == 'baseline'][0]['baseline']['t']
-        expected = self.c._creep_model((last['t'] - warm) / 60.) - self.c._creep_model((zero_t - warm) / 60.)
+        tare_t = self.c.tare_t
+        expected = (self.c._creep_fast((last['t'] - tare_t) / 60.) - self.c._creep_fast((zero_t - tare_t) / 60.)
+                    + self.c._creep_slow((last['t'] - warm) / 60.) - self.c._creep_slow((zero_t - warm) / 60.))
         self.assertAlmostEqual(last['creep_correction_g'], expected, places=6)
 
 

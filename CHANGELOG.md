@@ -1,3 +1,10 @@
+# 0.1.0-beta.10.3.12 — the zero from the tare itself; contact-band vibration (2026-11-26)
+
+- Zero from the load cell's tare reply (board raw reading at the tare; `board_tare`), else the settling window; manual zero still first.
+- Creep: settling counted from the tare, warm-up drift from the bed's warm-up.
+- `contact_vibration.py`: removes stepper tones (from line direction and speed) and frame resonances (shaper frequencies) and reports 2-40 Hz vibration per reading and offset.
+- 423 software tests +37 subtests pass.
+
 # 0.1.0-beta.10.3.11 — the warm-up time from Auto Trim's soak (2026-11-25)
 
 - When the bed's warm-up was not seen, its time comes from Auto Trim's soak message (covered, already covered, or no soak because hot for N s); own observation takes precedence. `bed_warm_source` per reading.

@@ -22,7 +22,7 @@ except ImportError:
     from deep_calibration_mesh import DeepCalibrationMesh
     from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.3.11'
+VERSION = '0.1.0-beta.10.3.12'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -228,6 +228,7 @@ class DeepCalibration:
         self.bed_warm_t = None
         self.bed_warm_source = None
         self.output_listening = False
+        self.tare_zero = None
         self.tare_generation = None
         self.tare_t = None
         if not finite(self.cpg):
@@ -826,10 +827,18 @@ class DeepCalibration:
                                      and max(shaper_frequencies)<.4*(filtered['rate_hz'] or 0)),
                                  **filtered))
 
-    def _creep_model(self, minutes):
-        slow = (self.creep_rate * self.creep_slow_tau * (1. - math.exp(-minutes / self.creep_slow_tau))
+    def _creep_fast(self, minutes):
+        # settling after a tare (10.3.12: counted from the tare)
+        return self.creep_recovery * (1. - math.exp(-max(0., minutes) / self.creep_tau))
+
+    def _creep_slow(self, minutes):
+        # drift while the printer warms up (counted from the bed's warm-up)
+        minutes = max(0., minutes)
+        return (self.creep_rate * self.creep_slow_tau * (1. - math.exp(-minutes / self.creep_slow_tau))
                 if self.creep_slow_tau > 0 else self.creep_rate * minutes)
-        return self.creep_recovery * (1. - math.exp(-minutes / self.creep_tau)) + slow
+
+    def _creep_model(self, minutes):
+        return self._creep_fast(minutes) + self._creep_slow(minutes)
 
     def _track_bed(self, bed, now):
         # When did the bed reach its temperature? Only known if the heating
@@ -859,7 +868,20 @@ class DeepCalibration:
                       re.compile(r'AUTO TRIM: bed heat soak \d+ s .*? already covered by the (\d+) s nozzle clean'),
                       re.compile(r'AUTO TRIM: no bed heat soak \(bed hot for (\d+) s'))
 
+    TARE_REPLY = re.compile(r'H1 > command H1 ok\. (-?\d+)')
+
     def _auto_trim_output(self, msg):
+        # 10.3.12: the load cell's tare reply carries the board's raw reading
+        # at the moment of the tare: the exact zero, no settling window needed
+        try:
+            if isinstance(msg, str) and 'H1 > command H1 ok' in msg:
+                m = self.TARE_REPLY.search(msg)
+                if m:
+                    self.tare_zero = dict(raw=int(m.group(1)), t=self.reactor.monotonic(),
+                                          generation=getattr(self.reader, '_command_id', None))
+                return
+        except Exception:
+            logging.exception('deep_calibration: tare reply')
         # 10.3.11: when the bed's warm-up was not seen here (e.g. Klipper
         # restarted with a hot bed), Auto Trim's soak says how long the bed
         # has been hot (3.9.16 runs a full soak when it does not know either)
@@ -877,16 +899,23 @@ class DeepCalibration:
             logging.exception('deep_calibration: Auto Trim soak message')
 
     def _creep_since_zero(self, stamp):
-        # Counted from when the bed reached its temperature. The zero already
-        # holds the creep up to when it was taken, so a reading's correction
-        # is creep(now) - creep(at the zero)
-        if self.bed_warm_t is None or not (self.creep_recovery or self.creep_rate):
+        # The settling counts from the tare, the warm-up drift from when the
+        # bed reached its temperature; each part applies when its moment is
+        # known. The zero already holds the creep up to when it was taken, so
+        # a reading's correction is creep(now) - creep(at the zero).
+        if not (self.creep_recovery or self.creep_rate):
             return None
         zero_t = self.baseline.get('t') if self.baseline else None
-        if zero_t is None:
+        if zero_t is None or (self.tare_t is None and self.bed_warm_t is None):
             return None
-        return (self._creep_model(max(0., stamp - self.bed_warm_t) / 60.)
-                - self._creep_model(max(0., zero_t - self.bed_warm_t) / 60.))
+        total = 0.
+        if self.tare_t is not None and self.creep_recovery:
+            total += (self._creep_fast((stamp - self.tare_t) / 60.)
+                      - self._creep_fast((zero_t - self.tare_t) / 60.))
+        if self.bed_warm_t is not None and self.creep_rate:
+            total += (self._creep_slow((stamp - self.bed_warm_t) / 60.)
+                      - self._creep_slow((zero_t - self.bed_warm_t) / 60.))
+        return total
 
     def _acquisition(self, stamp, previous):
         # the board's conversion: after the previous reply, at most one board
@@ -912,6 +941,12 @@ class DeepCalibration:
         self.auto_zero_closed = True
         if self.baseline is not None and self.baseline.get('generation') == generation:
             return                                    # a valid manual zero takes precedence
+        tz = self.tare_zero
+        if tz is not None and tz.get('generation') == generation and tz['t'] <= t:
+            # 10.3.12: the board's own reading at the tare (no re-tare since)
+            self.baseline = dict(t=tz['t'], raw=float(tz['raw']), generation=generation, kind='board_tare')
+            self._event('baseline', baseline=self.baseline)
+            return
         c = [x for x in self.zero_candidates if x[2] == generation and t - x[0] <= 20.]
         if len(c) < self.auto_zero_min_readings or c[-1][0] - c[0][0] < self.auto_zero_min_span:
             self._event('auto_zero_unavailable', reason='too_few_quiet_readings_after_tare', readings=len(c))
