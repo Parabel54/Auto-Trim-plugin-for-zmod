@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.9.15 (2026-11-19). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.9.16 (2026-11-25). For printers running Forge-X, use Auto Trim for Forge-X.
 
 ## Contents
 
@@ -393,11 +393,11 @@ The soak is off by default (`soak: OFF`). Turn it on for one print with `SOAK=` 
 
 ### How SOAK=AUTO decides
 
-1. **The bed was already hot** (it started within 5 C of its target, for example back-to-back prints): no soak.
+1. **The bed was already hot** (it started within 5 C of its target, for example back-to-back prints): since 3.9.16 it depends on **how long** it has been hot. Auto Trim records when the bed reached its target, if it saw it below the target first. Hot for at least the full calibrated soak: no soak. Hot for less: the rest of the full soak. Not known (the bed was already hot when Klipper started, or Klipper was restarted): the **full** soak.
 2. **A calibration exists** (from `AUTO_TRIM_SOAK_CALIBRATE` or `AUTO_TRIM_MESH_CALIBRATE`): it uses the calibration at the nearest bed temperature, and the slowest of the measured points, centre or corners. It is scaled by how far the bed rose this time compared with during the calibration: a bed that rose half as far soaks half as long. Measured soaks are limited to 2700 s (`soak_cal_max`).
 3. **No calibration:** 3 s per degree the bed rose (`soak_per_degree`), at most 600 s (`soak_max`).
 
-Time the bed already spent hot during the nozzle clean counts, so the printer only waits for what is left.
+Time the bed already spent hot counts (during the nozzle clean, or before the print when it was preheated), so the printer only waits for what is left.
 
 Example, with a calibration at 60 C from a 20 C bed that settled after 900 s at its slowest corner:
 
@@ -405,7 +405,9 @@ Example, with a calibration at 60 C from a 20 C bed that settled after 900 s at 
 |---|---|---|
 | 60 C from a cold bed (20 C) | 40 C, as much as the calibration | 900 s |
 | 60 C from a warm bed (40 C) | 20 C, half as much | 450 s |
-| 60 C, straight after another print (58 C) | under 5 C | none |
+| 60 C, straight after another print, bed hot for 20 minutes | under 5 C, hot longer than 900 s | none |
+| 60 C, preheated from the screen 5 minutes ago | under 5 C, hot for 300 s | 600 s (the rest of 900 s) |
+| 60 C right after a Klipper restart, or already hot when Klipper started | unknown | 900 s (full) |
 | 60 C without any calibration, from 20 C | 40 C x 3 s | 120 s |
 
 The console shows the decision and counts down:
@@ -413,7 +415,7 @@ The console shows the decision and counts down:
 AUTO TRIM: bed heat soak 900 s (calibrated at 60 C, slowest point, bed started at 20 C), 180 s covered by the nozzle clean, waiting 720 s
 ```
 
-If Klipper was restarted just before the print, the starting bed temperature is unknown and `AUTO` skips the soak for that print. A bed preheated from the screen just before printing also counts as already hot, although the plate has not settled: start from a cold bed, or wait a few minutes after preheating.
+Before 3.9.16, a Klipper restart just before the print or a bed preheated from the screen meant no soak at all, although the plate had not settled. Now the soak runs in full whenever Auto Trim cannot tell how long the bed has been hot, and only the time it knows the bed has been hot is credited.
 
 ### Measuring your bed
 

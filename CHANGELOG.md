@@ -3,6 +3,11 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.9.16] - 2026-11-25
+
+### Changed
+- `SOAK=AUTO` with the bed already hot or its history unknown: the bed watcher records when the bed reached its target (only if it saw it below the target first). Hot for at least the full calibrated soak: no soak; hot for less: the rest of the full soak; not known (already hot when Klipper started, or Klipper restarted): the full soak. Before, a bed within 5 C of its target meant no soak however briefly it had been hot, and a Klipper restart meant no soak. A cold start is unchanged. The console says which case applied and what was credited.
+
 ## [3.9.15] - 2026-11-19
 
 ### Fixed
