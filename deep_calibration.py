@@ -22,7 +22,7 @@ except ImportError:
     from deep_calibration_mesh import DeepCalibrationMesh
     from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.3.10'
+VERSION = '0.1.0-beta.10.3.11'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -226,6 +226,8 @@ class DeepCalibration:
         self.bed_target = None
         self.bed_seen_cold = False
         self.bed_warm_t = None
+        self.bed_warm_source = None
+        self.output_listening = False
         self.tare_generation = None
         self.tare_t = None
         if not finite(self.cpg):
@@ -676,6 +678,11 @@ class DeepCalibration:
                 dropped = self.dropped
             context = self._context(now)
             self._track_bed((context.get('heaters') or {}).get('heater_bed') or {}, now)
+            if not self.output_listening:
+                self.output_listening = True
+                register = getattr(self.gcode, 'register_output_handler', None)
+                if callable(register):
+                    register(self._auto_trim_output)
             self.context_id += 1
             self.last_context = context
             if self.active:
@@ -807,6 +814,7 @@ class DeepCalibration:
                                  creep_correction_g=creep,
                                  time_since_tare_s=(stamp - self.tare_t) if self.tare_t is not None else None,
                                  time_since_bed_warm_s=(stamp - self.bed_warm_t) if self.bed_warm_t is not None else None,
+                                 bed_warm_source=self.bed_warm_source if self.bed_warm_t is not None else None,
                                  filtered_grams_creep_corrected=(delta/self.cpg - creep) if delta is not None and self.cpg and creep is not None else None,
                                  counts_per_gram=self.cpg or None,
                                  motion_at_receipt=motion_at_receipt, slicer_context=gate,
@@ -835,14 +843,38 @@ class DeepCalibration:
             self.bed_target, self.bed_seen_cold, self.bed_warm_t = None, temperature < 40., None
             return
         if target != self.bed_target:
-            self.bed_target, self.bed_warm_t = target, None
+            if self.bed_target is not None or self.bed_warm_source != 'auto_trim_soak':
+                self.bed_warm_t = None
+            self.bed_target = target
             self.bed_seen_cold = temperature < target - 1.
         if temperature < target - 1.:
             if self.bed_warm_t is None:
                 self.bed_seen_cold = True
         elif self.bed_warm_t is None and self.bed_seen_cold:
-            self.bed_warm_t = now
-            self._event('bed_warm', target=target)
+            self.bed_warm_t, self.bed_warm_source = now, 'observed'
+            self._event('bed_warm', target=target, source='observed')
+
+    AUTO_TRIM_SOAK = (re.compile(r'AUTO TRIM: bed heat soak \d+ s .*?, (\d+) s covered by .*?, waiting \d+ s'),
+                      re.compile(r'AUTO TRIM: bed heat soak \d+ s .*? already covered: (\d+) s by '),
+                      re.compile(r'AUTO TRIM: bed heat soak \d+ s .*? already covered by the (\d+) s nozzle clean'),
+                      re.compile(r'AUTO TRIM: no bed heat soak \(bed hot for (\d+) s'))
+
+    def _auto_trim_output(self, msg):
+        # 10.3.11: when the bed's warm-up was not seen here (e.g. Klipper
+        # restarted with a hot bed), Auto Trim's soak says how long the bed
+        # has been hot (3.9.16 runs a full soak when it does not know either)
+        try:
+            if self.bed_warm_t is not None or not isinstance(msg, str) or 'AUTO TRIM' not in msg:
+                return
+            for pattern in self.AUTO_TRIM_SOAK:
+                m = pattern.search(msg)
+                if m:
+                    now = self.reactor.monotonic()
+                    self.bed_warm_t, self.bed_warm_source = now - float(m.group(1)), 'auto_trim_soak'
+                    self._event('bed_warm', target=self.bed_target, source='auto_trim_soak', hot_for_s=float(m.group(1)))
+                    return
+        except Exception:
+            logging.exception('deep_calibration: Auto Trim soak message')
 
     def _creep_since_zero(self, stamp):
         # Counted from when the bed reached its temperature. The zero already

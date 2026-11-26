@@ -1,3 +1,8 @@
+# 0.1.0-beta.10.3.11 — the warm-up time from Auto Trim's soak (2026-11-25)
+
+- When the bed's warm-up was not seen, its time comes from Auto Trim's soak message (covered, already covered, or no soak because hot for N s); own observation takes precedence. `bed_warm_source` per reading.
+- 415 software tests +37 subtests pass.
+
 # 0.1.0-beta.10.3.10 — creep counted from the bed's warm-up (2026-11-25)
 
 - Creep compensation counted from when the bed reached its temperature (seen heating; unknown if already hot when first seen: no correction), with a fading slow part (`creep_slow_tau`, 120 min estimated). A warm printer's first layer stayed flat (+0.41 g/min) where cold-start prints rose +2.4 g/min.

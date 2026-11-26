@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.3.10 (2026-11-25). **Development continuation of beta 10.3.9.**
+Version 0.1.0-beta.10.3.11 (2026-11-25). **Development continuation of beta 10.3.10.**
 
 ## Contents
 
@@ -188,6 +188,14 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 **By hand:** `DEEP_CALIBRATION_MARK LABEL=<label> NOTE="..."` during a recording. Labels: `GOOD`, `TOO_HIGH`, `TOO_LOW`, `TRAVEL`, `TRANSITION` and `UNLABELLED`. `DC_MARK_GOOD` is a shortcut for `GOOD`, handy as a screen button. A label you set by hand after the last babystep is kept: the automatic `GOOD` at layer 2 does not replace it.
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
+
+## Beta 10.3.11: the warm-up time from Auto Trim's soak
+
+Current continuation: **0.1.0-beta.10.3.11**. Replace the full folder, rerun the installer and reboot while idle.
+
+10.3.10 applies no creep correction when it has not seen the bed heat up. Now, in that case, it takes the warm-up time from Auto Trim's soak message: "… E s covered by …, waiting …", "… already covered: E s by …" (and the older "already covered by the E s nozzle clean") or "no bed heat soak (bed hot for N s …)" mean the bed has been hot for E or N seconds. Its own observation of the bed always takes precedence. With Auto Trim 3.9.16, which runs the full soak when it cannot tell how long the bed has been hot, every print with `SOAK=AUTO` gives a known warm-up time. Readings carry `bed_warm_source` (`observed` or `auto_trim_soak`); the `bed_warm` event says which.
+
+Software tests: 415 pass with 37 subtests (4 new, with the messages Auto Trim 3.9.16 prints).
 
 ## Beta 10.3.10: creep counted from the bed's warm-up
 
