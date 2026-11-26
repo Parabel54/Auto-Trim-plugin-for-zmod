@@ -1,3 +1,9 @@
+# 0.1.0-beta.10.3.10 — creep counted from the bed's warm-up (2026-11-25)
+
+- Creep compensation counted from when the bed reached its temperature (seen heating; unknown if already hot when first seen: no correction), with a fading slow part (`creep_slow_tau`, 120 min estimated). A warm printer's first layer stayed flat (+0.41 g/min) where cold-start prints rose +2.4 g/min.
+- `bed_warm` event, `time_since_bed_warm_s` per reading.
+- 411 software tests +37 subtests pass.
+
 # 0.1.0-beta.10.3.9 — the load cell's own creep is subtracted (2026-11-25)
 
 - Creep compensation from an idle 25-minute measurement (recovery 14.9 g, tau 0.5 min, 0.81 g/min): `filtered_grams_creep_corrected`, `creep_correction_g`, `time_since_tare_s`; tare time from the driver's command counter, tracked for every reading.

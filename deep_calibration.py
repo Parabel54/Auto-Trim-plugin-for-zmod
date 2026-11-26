@@ -22,7 +22,7 @@ except ImportError:
     from deep_calibration_mesh import DeepCalibrationMesh
     from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.3.9'
+VERSION = '0.1.0-beta.10.3.10'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -212,13 +212,20 @@ class DeepCalibration:
         if not finite(self.interval) or not finite(self.tau):
             raise config.error('deep_calibration: context_interval and filter_tau must be finite')
         self.cpg = config.getfloat('counts_per_gram', 0.)
-        # 10.3.9: the load cell's own creep after a tare, measured with
-        # nothing touching: a recovery of creep_recovery_g with time constant
-        # creep_tau (minutes), then a steady creep_rate (g per minute).
+        # The load cell's own creep while the printer warms up, measured with
+        # nothing touching: a quick part (creep_recovery_g, time constant
+        # creep_tau minutes) and a slow part starting at creep_rate g/min and
+        # fading with time constant creep_slow_tau minutes (0: never fades).
+        # 10.3.10: counted from when the bed reached its temperature, not
+        # from the tare: on a printer already warm the force stayed flat.
         # 0 disables. Readings get creep-corrected force next to the plain one.
         self.creep_recovery = config.getfloat('creep_recovery_g', 0., minval=0., maxval=500.)
         self.creep_tau = config.getfloat('creep_tau', .5, above=0., maxval=60.)
         self.creep_rate = config.getfloat('creep_rate', 0., minval=-50., maxval=50.)
+        self.creep_slow_tau = config.getfloat('creep_slow_tau', 120., minval=0., maxval=10000.)
+        self.bed_target = None
+        self.bed_seen_cold = False
+        self.bed_warm_t = None
         self.tare_generation = None
         self.tare_t = None
         if not finite(self.cpg):
@@ -668,6 +675,7 @@ class DeepCalibration:
                 self.pending.clear()
                 dropped = self.dropped
             context = self._context(now)
+            self._track_bed((context.get('heaters') or {}).get('heater_bed') or {}, now)
             self.context_id += 1
             self.last_context = context
             if self.active:
@@ -798,6 +806,7 @@ class DeepCalibration:
                                  filtered_grams=delta/self.cpg if delta is not None and self.cpg else None,
                                  creep_correction_g=creep,
                                  time_since_tare_s=(stamp - self.tare_t) if self.tare_t is not None else None,
+                                 time_since_bed_warm_s=(stamp - self.bed_warm_t) if self.bed_warm_t is not None else None,
                                  filtered_grams_creep_corrected=(delta/self.cpg - creep) if delta is not None and self.cpg and creep is not None else None,
                                  counts_per_gram=self.cpg or None,
                                  motion_at_receipt=motion_at_receipt, slicer_context=gate,
@@ -810,18 +819,42 @@ class DeepCalibration:
                                  **filtered))
 
     def _creep_model(self, minutes):
-        return self.creep_recovery * (1. - math.exp(-minutes / self.creep_tau)) + self.creep_rate * minutes
+        slow = (self.creep_rate * self.creep_slow_tau * (1. - math.exp(-minutes / self.creep_slow_tau))
+                if self.creep_slow_tau > 0 else self.creep_rate * minutes)
+        return self.creep_recovery * (1. - math.exp(-minutes / self.creep_tau)) + slow
+
+    def _track_bed(self, bed, now):
+        # When did the bed reach its temperature? Only known if the heating
+        # was seen: a bed already hot when first seen (e.g. after a restart)
+        # leaves it unknown, and then no creep correction is applied.
+        try:
+            target, temperature = float(bed.get('target') or 0.), float(bed.get('temperature'))
+        except (TypeError, ValueError, AttributeError):
+            return
+        if target <= 0.:
+            self.bed_target, self.bed_seen_cold, self.bed_warm_t = None, temperature < 40., None
+            return
+        if target != self.bed_target:
+            self.bed_target, self.bed_warm_t = target, None
+            self.bed_seen_cold = temperature < target - 1.
+        if temperature < target - 1.:
+            if self.bed_warm_t is None:
+                self.bed_seen_cold = True
+        elif self.bed_warm_t is None and self.bed_seen_cold:
+            self.bed_warm_t = now
+            self._event('bed_warm', target=target)
 
     def _creep_since_zero(self, stamp):
-        # The zero already holds the creep up to when it was taken, so a
-        # reading's correction is creep(now) - creep(at the zero)
-        if self.tare_t is None or not (self.creep_recovery or self.creep_rate):
+        # Counted from when the bed reached its temperature. The zero already
+        # holds the creep up to when it was taken, so a reading's correction
+        # is creep(now) - creep(at the zero)
+        if self.bed_warm_t is None or not (self.creep_recovery or self.creep_rate):
             return None
         zero_t = self.baseline.get('t') if self.baseline else None
-        if zero_t is None or zero_t < self.tare_t:
+        if zero_t is None:
             return None
-        return (self._creep_model(max(0., stamp - self.tare_t) / 60.)
-                - self._creep_model(max(0., zero_t - self.tare_t) / 60.))
+        return (self._creep_model(max(0., stamp - self.bed_warm_t) / 60.)
+                - self._creep_model(max(0., zero_t - self.bed_warm_t) / 60.))
 
     def _acquisition(self, stamp, previous):
         # the board's conversion: after the previous reply, at most one board

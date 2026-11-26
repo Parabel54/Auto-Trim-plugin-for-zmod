@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.3.9 (2026-11-25). **Development continuation of beta 10.3.8.**
+Version 0.1.0-beta.10.3.10 (2026-11-25). **Development continuation of beta 10.3.9.**
 
 ## Contents
 
@@ -188,6 +188,18 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 **By hand:** `DEEP_CALIBRATION_MARK LABEL=<label> NOTE="..."` during a recording. Labels: `GOOD`, `TOO_HIGH`, `TOO_LOW`, `TRAVEL`, `TRANSITION` and `UNLABELLED`. `DC_MARK_GOOD` is a shortcut for `GOOD`, handy as a screen button. A label you set by hand after the last babystep is kept: the automatic `GOOD` at layer 2 does not replace it.
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
+
+## Beta 10.3.10: creep counted from the bed's warm-up
+
+Current continuation: **0.1.0-beta.10.3.10**. Replace the full folder, rerun the installer and reboot while idle.
+
+A 10.3.8 first layer on a printer that had been heating all afternoon (30 mm/s, −0.111 held 17 minutes) stayed nearly flat: −0.8 to +5.3 g, +0.41 g per minute, against +2.4 g per minute in the morning's prints from cold at the same offset and speed, and with no recovery jump after the tare. The rise follows the printer warming up, not the tare. 10.3.9 counted the creep from the tare, so on a warm printer it would have subtracted creep that is not there.
+
+- **Counted from when the bed reached its temperature** (within 1 °C of its target, after the heating was seen). A bed already hot when Deep Calibration first sees it (for example after a restart) leaves the warm-up time unknown, and then no correction is applied. A target change restarts the clock; a `bed_warm` event marks the moment; readings carry `time_since_bed_warm_s`.
+- **The slow part fades:** creep(t) = `creep_recovery_g` × (1 − e^(−t/`creep_tau`)) + `creep_rate` × `creep_slow_tau` × (1 − e^(−t/`creep_slow_tau`)). `creep_slow_tau` (120 minutes, estimated from 0.81 g/min just after warm-up and about 0.4 g/min hours later; 0 keeps the old never-fading rate) is a first estimate: an idle recording on a printer warm for hours would pin it down.
+- Correction per reading is still creep(now) − creep(at the zero); `time_since_tare_s` is still recorded.
+
+Software tests: 411 pass with 37 subtests.
 
 ## Beta 10.3.9: the load cell's own creep is subtracted
 
