@@ -2,7 +2,7 @@
 
 Automatic first-layer Z offset management for Flashforge AD5X, AD5M and AD5M Pro printers running zMod.
 
-Version 3.9.16 (2026-11-25). For printers running Forge-X, use Auto Trim for Forge-X.
+Version 3.9.17 (2026-11-27). For printers running Forge-X, use Auto Trim for Forge-X.
 
 ## Contents
 
@@ -367,6 +367,22 @@ probe_count: 9, 9
 mesh_pps: 2, 2
 ```
 
+### Dense base mesh for the shape mesh (3.9.17)
+
+The probe grid measures the bed every 25–30 mm, but a build plate has hills and valleys smaller than that: on one AD5X, neighbouring mesh points differed by up to 0.05 mm. Between probe points the mesh just smooths over them. A dense saved mesh, measured once, captures them, and the shape mesh addon (1.2.0) uses it for every print:
+```
+AUTO_TRIM_MESH_CALIBRATE BED=60 PROBE_COUNT=21,21
+```
+`PROBE_COUNT` takes 3 to 41 points per axis (`X,Y` or one number for both). 21 x 21 measures every 10.75 mm; 41 x 41 every 5.4 mm. It runs the usual calibration (nozzle clean, bed soak, mesh) and saves the mesh as `auto`. It takes a while: about 14 seconds per point on an AD5X, so roughly 100 minutes for 21 x 21 and 6.5 hours for 41 x 41. It is a one-off: redo it when you change the plate or re-level.
+
+**Interpolation is kept in check.** For 9 points per axis or more, the calibration passes Klipper a `MESH_PPS` that keeps the interpolated mesh at most 41 points per axis (1 for 21 x 21, 0 for 41 x 41), saved with the profile. zMod's `mesh_pps: 5` on 21 x 21 would mean 121 x 121 points, and large interpolations have stopped AD5X printers with `Timer too close` (see Denser mesh above).
+
+With `MESH=SHAPE`, the final mesh then uses the dense mesh's grid over the print area: each point is the plate's measured height from the dense mesh, plus today's offset and tilt from the fresh probes, plus a local correction where today's probes differ from it. The console says so:
+```
+AUTO TRIM SHAPE MESH: probed 48 points; final mesh 19x19 on the saved mesh 'auto' grid (its hills and valleys), aligned by the probes (shift +0.015 mm, local differences 0.004 mm, largest 0.009 mm)
+```
+`MESH=SAVED` and `MESH=AUTO` can load the dense mesh as well (its interpolation is saved with it).
+
 ## Probe speed
 
 Every bed mesh is probed at 1 mm/s (`probe_speed`): KAMP and full meshes from Auto Trim, meshes zMod starts itself, and the saved-mesh and bed checks. On a load cell probe, a slower touch gives a more repeatable measurement than the stock 5 mm/s.
@@ -648,7 +664,7 @@ Auto Trim works with zMod 1.7.5. What changed there, and what it means:
 
 ## Shape mesh addon (optional)
 
-**New in 3.9.14; use addon 1.0.1 or later (3.9.15).** An optional addon for zMod that adds `MESH=SHAPE`: a mesh that probes only the grid points near your parts, instead of every point of the rectangle around them. Auto Trim works exactly as before without it.
+**New in 3.9.14; use addon 1.0.1 or later (3.9.15); 1.2.0 adds the dense base mesh (3.9.17).** An optional addon for zMod that adds `MESH=SHAPE`: a mesh that probes only the grid points near your parts, instead of every point of the rectangle around them. Auto Trim works exactly as before without it.
 
 ### What it does
 
@@ -662,7 +678,7 @@ Example: a side panel running from one corner of an AD5X bed to the other covers
 3. Fills the other points from your saved full-bed mesh (`auto`, made by `AUTO_TRIM_MESH_CALIBRATE`), first aligned to the fresh points: the saved mesh is shifted and tilted to match them, so it fits the bed as it is today.
 4. Hands Klipper the complete 9 x 9 mesh.
 
-Under the parts the mesh comes from fresh probing; nothing is printed at the filled points. In testing with Klipper's own mesh code, the side panel's mesh was as accurate under the part as probing all 81 points (largest error 0.005 mm against 0.006 mm), with 40% fewer touches.
+Under the parts the mesh comes from fresh probing; nothing is printed at the filled points. With a saved mesh denser than the probe grid (addon 1.2.0, see [Dense base mesh](#dense-base-mesh-for-the-shape-mesh-3917)), the final mesh is built on that mesh's grid instead, so it carries the plate's finer hills and valleys, aligned to today's probes. In testing with Klipper's own mesh code, the side panel's mesh was as accurate under the part as probing all 81 points (largest error 0.005 mm against 0.006 mm), with 40% fewer touches.
 
 The console shows what it did:
 ```

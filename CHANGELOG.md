@@ -3,6 +3,12 @@
 All notable changes to Auto Trim for zMod are listed here.
 Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.9.17] - 2026-11-27
+
+### Added
+- `AUTO_TRIM_MESH_CALIBRATE PROBE_COUNT=X,Y` (or one number), 3 to 41 points per axis, for a dense saved mesh. For 9 points per axis or more it passes `MESH_PPS` so the interpolated mesh stays at most 41 points per axis (saved with the profile).
+- Shape mesh addon 1.2.0: with a saved mesh denser than the probe grid, the final mesh is built on that mesh's grid over the print area (its measured hills and valleys, plus today's offset and tilt from the probes, plus a local correction fading out away from them), with Klipper's interpolation capped at 41 points per axis.
+
 ## [3.9.16] - 2026-11-25
 
 ### Changed
