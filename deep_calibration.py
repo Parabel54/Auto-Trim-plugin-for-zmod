@@ -22,7 +22,7 @@ except ImportError:
     from deep_calibration_mesh import DeepCalibrationMesh
     from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.3.13'
+VERSION = '0.1.0-beta.10.3.14'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -150,6 +150,28 @@ GUARD_LEVEL_TEXT = ('full recording', 'printer state every 0.2 s', 'acceleration
                     'acceleration every 8th sample, printer state every 1 s, ADC every 4th report')
 
 
+class DisplaySensor:
+    """A Klipper sensor (for [temperature_sensor]) fed by Deep Calibration."""
+    def __init__(self):
+        self.callback = None
+        self.min_value = self.max_value = None
+        self.value = 0.
+
+    def setup_minmax(self, min_temp, max_temp):
+        self.min_value, self.max_value = min_temp, max_temp
+
+    def setup_callback(self, cb):
+        self.callback = cb
+
+    def get_report_time_delta(self):
+        return .2
+
+    def push(self, print_time, value):
+        self.value = value
+        if self.callback is not None:
+            self.callback(print_time, value)
+
+
 class RecordingLoadGuard:
     """Record less one level at a time; record more one level at a time after
     sustained headroom. Never stops a stream or the recording."""
@@ -234,6 +256,20 @@ class DeepCalibration:
         # plastic_density in g/cm3; 0 picks it from the recipe's material.
         self.plastic_density = config.getfloat('plastic_density', 0., minval=0., maxval=5.)
         self.last_e = None
+        # 10.3.14: Fluidd/Mainsail display. zMod's own load cell sensor pushes
+        # the board's grams (19 g steps, sign dropped). These sensor types
+        # report from the raw counts instead (about 0.02 g at 52.56 counts/g):
+        # [temperature_sensor ...] with sensor_type deep_calibration_grams or
+        # deep_calibration_nozzle. zMod's sensor is left alone (ZCONTROL uses it).
+        self.displays = {'grams': [], 'nozzle': []}
+        self.display_ref = None
+        self.display_generation = None
+        try:
+            pheaters = self.printer.load_object(config, 'heaters')
+            pheaters.add_sensor_factory('deep_calibration_grams', lambda cfg: self._display_sensor('grams'))
+            pheaters.add_sensor_factory('deep_calibration_nozzle', lambda cfg: self._display_sensor('nozzle'))
+        except Exception:
+            logging.exception('deep_calibration: display sensors not registered')
         self.tare_generation = None
         self.tare_t = None
         if not finite(self.cpg):
@@ -751,11 +787,13 @@ class DeepCalibration:
     def _drain_force(self,pending,now,context):
         attributed_start = len(pending) - 16
         for index, (sequence, stamp, raw, grams, generation) in enumerate(pending):
+            nozzle_display = None
             if generation != self.tare_generation:
                 # a new tare (the driver's command counter moved): creep
                 # restarts. Tracked for every reading, recording or not:
                 # Auto Trim re-tares during print preparation.
                 self.tare_generation, self.tare_t = generation, stamp
+            self._display(stamp, raw, generation)
             # Keep raw data exact. Context is taken on the reactor thread
             # and deliberately has a separate timestamp/id and lag field.
             filtered = self.signal.feed(stamp, raw, generation)
@@ -807,6 +845,13 @@ class DeepCalibration:
                 delta = filtered['filtered_raw']-self.baseline['raw'] if baseline_ok else None
                 creep = self._creep_since_zero(stamp) if baseline_ok and self.cpg else None
                 plastic = self._plastic_weight(motion) if baseline_ok else None
+                if delta is not None and self.cpg and plastic is not None:
+                    nozzle_display = delta / self.cpg - (creep or 0.) - plastic
+                if self.displays['nozzle']:
+                    try:
+                        self._push_nozzle(self.printer.lookup_object('mcu').estimated_print_time(stamp), nozzle_display)
+                    except Exception:
+                        self._push_nozzle(stamp, nozzle_display)
                 shaper_frequencies = [float(v['shaper_freq']) for v in context['shaper'].values()
                                       if v.get('shaper_freq') is not None and float(v['shaper_freq'])>0]
                 live = motion.get('live_position')
@@ -837,6 +882,37 @@ class DeepCalibration:
                                  shaper_resolvable=bool(shaper_frequencies and filtered['nyquist_hz']
                                      and max(shaper_frequencies)<.4*(filtered['rate_hz'] or 0)),
                                  **filtered))
+
+    def _display_sensor(self, kind):
+        sensor = DisplaySensor()
+        self.displays[kind].append(sensor)
+        return sensor
+
+    def _display(self, stamp, raw, generation, nozzle=None):
+        # grams since the last tare, from raw counts: the tare's own raw
+        # reading when captured, else the first reading after the tare
+        if not (self.displays['grams'] or self.displays['nozzle']):
+            return
+        if generation != self.display_generation:
+            tz = self.tare_zero
+            self.display_ref = tz['raw'] if tz is not None and tz.get('generation') == generation else raw
+            self.display_generation = generation
+        elif (self.tare_zero is not None and self.tare_zero.get('generation') == generation
+              and self.display_ref != self.tare_zero['raw']):
+            self.display_ref = self.tare_zero['raw']           # the tare reply arrived after the first reading
+        value = (raw - self.display_ref) / self.cpg if self.cpg else float(raw - self.display_ref)
+        try:
+            print_time = self.printer.lookup_object('mcu').estimated_print_time(stamp)
+        except Exception:
+            print_time = stamp
+        for sensor in self.displays['grams']:
+            sensor.push(print_time, value)
+        if not self.active:
+            self._push_nozzle(print_time, 0.)      # the nozzle force only exists while recording
+
+    def _push_nozzle(self, print_time, value):
+        for sensor in self.displays['nozzle']:
+            sensor.push(print_time, value if value is not None else 0.)
 
     DENSITIES = {'PLA': 1.24, 'PETG': 1.27, 'PET': 1.27, 'ABS': 1.04, 'ASA': 1.07, 'TPU': 1.21,
                  'PA': 1.14, 'PC': 1.20, 'HIPS': 1.04, 'PVA': 1.23}

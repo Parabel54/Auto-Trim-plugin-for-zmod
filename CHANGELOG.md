@@ -1,3 +1,9 @@
+# 0.1.0-beta.10.3.14 — the load cell in Fluidd, in real grams; shape mesh 1.2.0 (2026-11-27)
+
+- Sensor types `deep_calibration_grams` and `deep_calibration_nozzle`; `deep_calibration.cfg` declares `[temperature_sensor load_cell_grams]` and `[temperature_sensor nozzle_force]` (raw-count grams since the last tare, signed; nozzle force during recordings).
+- Shape mesh 1.2.0 (dense base mesh, interpolation capped at 41 points per axis).
+- 434 software tests +37 subtests pass.
+
 # 0.1.0-beta.10.3.13 — the plastic's weight is subtracted (2026-11-27)
 
 - `plastic_weight_g` from the filament fed since the zero (extruder position recorded with every zero) × cross-section × material density; `filtered_grams_nozzle` = force − creep − plastic; `plastic_density` override.

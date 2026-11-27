@@ -15,6 +15,13 @@
 # building the mesh inside that callback took 0.4 s on an AD5X, the move's
 # steps were sent too late, and the printer shut down with "Timer too close".
 #
+# 1.2.0: when the saved base mesh is denser than the probe grid (e.g. a
+# 21 x 21 full-bed mesh), the final mesh is built on the base's own grid over
+# the print area: the base's measured height at each point (the plate's hills
+# and valleys, finer than the probe grid can see), plus the plane fitted to
+# today's probes (offset and tilt), plus a smooth local correction where
+# today's probes differ from the base, fading out away from them.
+#
 # The grid (area and point count) is laid out as Klipper's adaptive mesh does
 # for the same area, and the probing goes through Klipper's ProbePointsHelper,
 # like a normal mesh: the probe's own speed, samples and retries apply, and
@@ -28,7 +35,7 @@ try:
 except ImportError:          # imported outside Klipper (tests)
     bed_mesh_module = probe_module = None
 
-VERSION = '1.0.1'
+VERSION = '1.2.0'
 
 
 def _inside(px, py, poly):
@@ -149,6 +156,45 @@ def idw(x, y, probed):
     return num / den
 
 
+def dense_from_base(base_points, base_params, lo, hi, probed, base, reach, min_count):
+    """The final mesh on the base's grid over [lo, hi]; None if the base is
+    not denser than min_count points per axis there. probed: [(x, y, z)]."""
+    xc, yc = int(base_params['x_count']), int(base_params['y_count'])
+    bx = [base_params['min_x'] + (base_params['max_x'] - base_params['min_x']) * i / (xc - 1) for i in range(xc)]
+    by = [base_params['min_y'] + (base_params['max_y'] - base_params['min_y']) * j / (yc - 1) for j in range(yc)]
+    i0 = max([i for i in range(xc) if bx[i] <= lo[0] + 1e-6] or [0]); i1 = min([i for i in range(xc) if bx[i] >= hi[0] - 1e-6] or [xc - 1])
+    j0 = max([j for j in range(yc) if by[j] <= lo[1] + 1e-6] or [0]); j1 = min([j for j in range(yc) if by[j] >= hi[1] - 1e-6] or [yc - 1])
+    nx, ny = i1 - i0 + 1, j1 - j0 + 1
+    if nx <= min_count[0] and ny <= min_count[1]:
+        return None
+    if nx < 3 or ny < 3:
+        return None
+    residuals = [(x, y, z - base(x, y)) for x, y, z in probed]
+    a, b, c = fit_plane(residuals)
+    local = [(x, y, r - (a + b * x + c * y)) for x, y, r in residuals]
+
+    def correction(x, y):
+        num = den = 0.
+        for px, py, r in local:
+            w = math.exp(-((x - px) ** 2 + (y - py) ** 2) / (reach * reach))
+            num += w * r; den += w
+        return num / max(den, 1.)               # fades to 0 away from the probes
+    matrix = [[base_points[j][i] + a + b * bx[i] + c * by[j] + correction(bx[i], by[j])
+               for i in range(i0, i1 + 1)] for j in range(j0, j1 + 1)]
+    return dict(lo=(bx[i0], by[j0]), hi=(bx[i1], by[j1]), nx=nx, ny=ny, matrix=matrix,
+                info=dict(shift=a + b * sum(p[0] for p in probed) / len(probed) + c * sum(p[1] for p in probed) / len(probed),
+                          residual_sd=math.sqrt(sum(r * r for _, _, r in local) / len(local)),
+                          residual_max=max(abs(r) for _, _, r in local), filled_from='saved mesh grid'))
+
+
+def dense_pps(configured, count, limit=41):
+    """Interpolation points between grid points, so that the interpolated
+    mesh has at most `limit` points per axis (never more than configured)."""
+    if count < 2:
+        return int(configured)
+    return max(0, min(int(configured), (limit - 1) // (count - 1) - 1))
+
+
 def fill_matrix(nodes, nx, ny, measured, base=None):
     """measured: {node index: z}. base: callable(x, y) -> z of the saved mesh,
     or None. Returns (matrix rows, info)."""
@@ -187,6 +233,10 @@ class ShapeMesh:
         self.base_profile = config.get('base_profile', 'auto')
         self.max_residual = config.getfloat('max_residual', .06, minval=.001, maxval=1.)
         self.profile_name = config.get('profile_name', 'shape')
+        # 1.2.0: use the base mesh's grid when it is denser (auto/off), and how
+        # far today's local differences reach (mm; 0: half a probe spacing)
+        self.dense_output = config.get('dense_output', 'auto').strip().lower()
+        self.local_reach = config.getfloat('local_reach', 0., minval=0., maxval=100.)
         self.helper = None
         if probe_module is not None:
             self.helper = probe_module.ProbePointsHelper(config, self._finalize, default_points=[])
@@ -211,13 +261,16 @@ class ShapeMesh:
                 for o in objects if o.get('polygon')]
 
     def _base(self, bed_mesh, name):
-        profiles = bed_mesh.pmgr.get_profiles() if hasattr(bed_mesh.pmgr, 'get_profiles') else bed_mesh.pmgr.profiles
-        profile = profiles.get(name)
+        profile = self._profile(bed_mesh, name)
         if not profile:
             return None
         zm = bed_mesh_module.ZMesh(dict(profile['mesh_params']), name)
         zm.build_mesh(profile['points'])
         return zm.calc_z
+
+    def _profile(self, bed_mesh, name):
+        profiles = bed_mesh.pmgr.get_profiles() if hasattr(bed_mesh.pmgr, 'get_profiles') else bed_mesh.pmgr.profiles
+        return profiles.get(name)
 
     def cmd_SHAPE_MESH(self, gcmd):
         if self.helper is None:
@@ -286,18 +339,50 @@ class ShapeMesh:
             base = self._base(bed_mesh, p['base'])
         except Exception:
             logging.exception('auto_trim_shape_mesh: saved mesh %s', p['base'])
-        matrix, info = fill_matrix(p['nodes'], p['nx'], p['ny'], measured, base)
-        zmesh = bed_mesh_module.ZMesh(p['params'], self.profile_name)
+        params = p['params']
+        dense = None
+        if base is not None and self.dense_output != 'off':
+            profile = self._profile(bed_mesh, p['base'])
+            lo = (params['min_x'], params['min_y']); hi = (params['max_x'], params['max_y'])
+            spacing = max((hi[0] - lo[0]) / (p['nx'] - 1), (hi[1] - lo[1]) / (p['ny'] - 1))
+            probed = [(p['nodes'][k][0], p['nodes'][k][1], z) for k, z in measured.items()]
+            dense = dense_from_base(profile['points'], profile['mesh_params'], lo, hi, probed, base,
+                                    self.local_reach or .5 * spacing, (p['nx'], p['ny']))
+        if dense is not None:
+            matrix, info = dense['matrix'], dense['info']
+            params = dict(params)
+            params.update(min_x=dense['lo'][0], max_x=dense['hi'][0], min_y=dense['lo'][1], max_y=dense['hi'][1],
+                          x_count=dense['nx'], y_count=dense['ny'])
+            # keep Klipper's interpolation at most 41 points per axis: the
+            # configured mesh_pps (5 on zMod) on a 21 x 21 grid would mean
+            # 121 x 121 points, and large interpolations have stopped AD5X
+            # printers with "Timer too close"
+            params['mesh_x_pps'], params['mesh_y_pps'] = (
+                dense_pps(params.get('mesh_x_pps', 2), dense['nx']), dense_pps(params.get('mesh_y_pps', 2), dense['ny']))
+            if max(params['mesh_x_pps'], params['mesh_y_pps']) == 0:
+                params['algo'] = 'direct'
+            elif params.get('algo') in ('lagrange', 'direct') and max(dense['nx'], dense['ny']) > 6:
+                params['algo'] = 'bicubic'
+            info['grid'] = (dense['nx'], dense['ny'])
+        else:
+            matrix, info = fill_matrix(p['nodes'], p['nx'], p['ny'], measured, base)
+        zmesh = bed_mesh_module.ZMesh(params, self.profile_name)
         zmesh.build_mesh(matrix)
         bed_mesh.set_mesh(zmesh)
-        filled = len(p['nodes']) - len(measured)
+        filled = (dense['nx'] * dense['ny'] - len(measured)) if dense is not None else len(p['nodes']) - len(measured)
         self.last = dict(version=VERSION, probed=len(measured), points=len(p['nodes']), filled=filled,
-                         grid=[p['nx'], p['ny']], reach=round(p['reach'], 1), base_profile=p['base'] if base else None,
+                         grid=list(info.pop('grid', (p['nx'], p['ny']))), reach=round(p['reach'], 1), base_profile=p['base'] if base else None,
+                         dense_output=dense is not None,
                          **{k: (round(v, 4) if isinstance(v, float) else v) for k, v in info.items()})
         if base is not None:
-            self.gcode.respond_info(
-                "AUTO TRIM SHAPE MESH: probed %d points, filled %d from the saved mesh '%s' (shift %+.3f mm, residual %.3f mm, largest %.3f mm)"
-                % (len(measured), filled, p['base'], info['shift'], info['residual_sd'], info['residual_max']))
+            if dense is not None:
+                self.gcode.respond_info(
+                    "AUTO TRIM SHAPE MESH: probed %d points; final mesh %dx%d on the saved mesh '%s' grid (its hills and valleys), aligned by the probes (shift %+.3f mm, local differences %.3f mm, largest %.3f mm)"
+                    % (len(measured), dense['nx'], dense['ny'], p['base'], info['shift'], info['residual_sd'], info['residual_max']))
+            else:
+                self.gcode.respond_info(
+                    "AUTO TRIM SHAPE MESH: probed %d points, filled %d from the saved mesh '%s' (shift %+.3f mm, residual %.3f mm, largest %.3f mm)"
+                    % (len(measured), filled, p['base'], info['shift'], info['residual_sd'], info['residual_max']))
             # The largest mismatch: one place where the saved mesh is clearly
             # off means it is out of date (probe scatter alone stays well below)
             if info['residual_max'] > self.max_residual:

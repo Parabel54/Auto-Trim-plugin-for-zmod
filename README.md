@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.3.13 (2026-11-27). **Development continuation of beta 10.3.12.**
+Version 0.1.0-beta.10.3.14 (2026-11-27). **Development continuation of beta 10.3.13.**
 
 ## Contents
 
@@ -188,6 +188,18 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 **By hand:** `DEEP_CALIBRATION_MARK LABEL=<label> NOTE="..."` during a recording. Labels: `GOOD`, `TOO_HIGH`, `TOO_LOW`, `TRAVEL`, `TRANSITION` and `UNLABELLED`. `DC_MARK_GOOD` is a shortcut for `GOOD`, handy as a screen button. A label you set by hand after the last babystep is kept: the automatic `GOOD` at layer 2 does not replace it.
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
+
+## Beta 10.3.14: the load cell in Fluidd, in real grams; shape mesh 1.2.0
+
+Current continuation: **0.1.0-beta.10.3.14**. Replace the full folder, rerun the installer and reboot while idle.
+
+- **Load cell in Fluidd/Mainsail.** zMod's load cell sensor shows the board's own grams, which move in steps of about 19 g and lose their sign (zMod's ZCONTROL crash detection uses that sensor, so it is left alone). Deep Calibration now registers two sensor types and `deep_calibration.cfg` declares them, so they appear with the temperature sensors (labelled °C; the values are grams, two decimals):
+  - `load_cell_grams`: from the raw counts (about 0.02 g at 52.56 counts/g), signed, relative to the last tare (the tare's own raw reading when its reply was seen, else the first reading after it), with every reading (about 6 per second).
+  - `nozzle_force`: during a first-layer recording, the nozzle's own force (force minus the plastic's weight and the creep); 0 otherwise.
+  Klipper requires `min_temp` ≥ −273.15 for these sections; the limits do not restrict the values shown.
+- **Shape mesh 1.2.0 bundled** (identical to the Auto Trim addon): with a saved mesh denser than the probe grid (`AUTO_TRIM_MESH_CALIBRATE PROBE_COUNT=21,21`, Auto Trim 3.9.17), the final mesh is built on that mesh's grid over the print area, with Klipper's interpolation capped at 41 points per axis.
+
+Software tests: 434 pass with 37 subtests.
 
 ## Beta 10.3.13: the plastic's weight is subtracted
 
