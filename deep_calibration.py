@@ -22,7 +22,7 @@ except ImportError:
     from deep_calibration_mesh import DeepCalibrationMesh
     from deep_calibration_gcode import GcodeContext, digest
 
-VERSION = '0.1.0-beta.10.3.12'
+VERSION = '0.1.0-beta.10.3.13'
 REPLY = re.compile(r'command\s+H7\s+ok\.\s*(-?\d+)\s+(-?\d+(?:\.\d+)?)\s*g\b', re.I)
 
 
@@ -229,6 +229,11 @@ class DeepCalibration:
         self.bed_warm_source = None
         self.output_listening = False
         self.tare_zero = None
+        # 10.3.13: the plastic laid on the bed adds to the load cell's
+        # reading; its weight comes from the filament fed since the zero.
+        # plastic_density in g/cm3; 0 picks it from the recipe's material.
+        self.plastic_density = config.getfloat('plastic_density', 0., minval=0., maxval=5.)
+        self.last_e = None
         self.tare_generation = None
         self.tare_t = None
         if not finite(self.cpg):
@@ -757,8 +762,11 @@ class DeepCalibration:
             acquired, acquired_uncertainty = self._acquisition(stamp, self.last_receipt)
             self.last_receipt = stamp
             if self.auto_zero and (self.active or self.armed is not None):
-                self._zero_observe(acquired, raw, grams, generation,
-                                   self._motion_at(acquired) if index >= attributed_start else None)
+                zero_motion = self._motion_at(acquired) if index >= attributed_start else None
+                ev = (zero_motion or {}).get('live_extruder_velocity')
+                if self.auto_zero_closed is False and not (finite(ev) and ev > .05):
+                    self._note_e(zero_motion)       # extruder position before any plastic is laid
+                self._zero_observe(acquired, raw, grams, generation, zero_motion)
             velocity = context['motion_requested'].get('live_velocity')
             ev = context['motion_requested'].get('live_extruder_velocity')
             self.history.append((stamp, raw, generation,
@@ -798,6 +806,7 @@ class DeepCalibration:
                 baseline_ok = self.baseline is not None and self.baseline['generation'] == generation and abs(grams)<=5120
                 delta = filtered['filtered_raw']-self.baseline['raw'] if baseline_ok else None
                 creep = self._creep_since_zero(stamp) if baseline_ok and self.cpg else None
+                plastic = self._plastic_weight(motion) if baseline_ok else None
                 shaper_frequencies = [float(v['shaper_freq']) for v in context['shaper'].values()
                                       if v.get('shaper_freq') is not None and float(v['shaper_freq'])>0]
                 live = motion.get('live_position')
@@ -817,6 +826,8 @@ class DeepCalibration:
                                  time_since_bed_warm_s=(stamp - self.bed_warm_t) if self.bed_warm_t is not None else None,
                                  bed_warm_source=self.bed_warm_source if self.bed_warm_t is not None else None,
                                  filtered_grams_creep_corrected=(delta/self.cpg - creep) if delta is not None and self.cpg and creep is not None else None,
+                                 plastic_weight_g=plastic,
+                                 filtered_grams_nozzle=(delta/self.cpg - (creep or 0.) - plastic) if delta is not None and self.cpg and plastic is not None else None,
                                  counts_per_gram=self.cpg or None,
                                  motion_at_receipt=motion_at_receipt, slicer_context=gate,
                                  acquisition_t=acquired, acquisition_uncertainty_s=acquired_uncertainty,
@@ -826,6 +837,28 @@ class DeepCalibration:
                                  shaper_resolvable=bool(shaper_frequencies and filtered['nyquist_hz']
                                      and max(shaper_frequencies)<.4*(filtered['rate_hz'] or 0)),
                                  **filtered))
+
+    DENSITIES = {'PLA': 1.24, 'PETG': 1.27, 'PET': 1.27, 'ABS': 1.04, 'ASA': 1.07, 'TPU': 1.21,
+                 'PA': 1.14, 'PC': 1.20, 'HIPS': 1.04, 'PVA': 1.23}
+
+    def _plastic_weight(self, motion):
+        # grams of plastic fed onto the bed since the zero (retractions net out)
+        zero_e = self.baseline.get('e') if self.baseline else None
+        pos = (motion or {}).get('live_position')
+        e = pos[3] if isinstance(pos, (list, tuple)) and len(pos) > 3 and finite(pos[3]) else None
+        if zero_e is None or e is None:
+            return None
+        density = self.plastic_density
+        if not density:
+            material = str(self.recipe.get('material', 'PLA')).upper()
+            density = next((d for k, d in self.DENSITIES.items() if material.startswith(k)), 1.24)
+        diameter = float(self.recipe.get('filament', 1.75) or 1.75)
+        return max(0., e - zero_e) * math.pi * (diameter / 2.) ** 2 * density / 1000.
+
+    def _note_e(self, motion):
+        pos = (motion or {}).get('live_position')
+        if isinstance(pos, (list, tuple)) and len(pos) > 3 and finite(pos[3]):
+            self.last_e = pos[3]
 
     def _creep_fast(self, minutes):
         # settling after a tare (10.3.12: counted from the tare)
@@ -944,7 +977,7 @@ class DeepCalibration:
         tz = self.tare_zero
         if tz is not None and tz.get('generation') == generation and tz['t'] <= t:
             # 10.3.12: the board's own reading at the tare (no re-tare since)
-            self.baseline = dict(t=tz['t'], raw=float(tz['raw']), generation=generation, kind='board_tare')
+            self.baseline = dict(t=tz['t'], raw=float(tz['raw']), generation=generation, kind='board_tare', e=self.last_e)
             self._event('baseline', baseline=self.baseline)
             return
         c = [x for x in self.zero_candidates if x[2] == generation and t - x[0] <= 20.]
@@ -956,7 +989,7 @@ class DeepCalibration:
         if iqr > self.auto_zero_max_iqr:
             self._event('auto_zero_unavailable', reason='unsteady', readings=len(c), iqr_counts=iqr)
             return
-        self.baseline = dict(t=c[-1][0], raw=statistics.median(raws), generation=generation,
+        self.baseline = dict(t=c[-1][0], raw=statistics.median(raws), generation=generation, e=self.last_e,
                              kind='auto_after_tare', readings=len(c), span_s=c[-1][0] - c[0][0], iqr_counts=iqr)
         self._event('baseline', baseline=self.baseline)
 
@@ -1735,7 +1768,7 @@ class DeepCalibration:
                 or not all(s[3] for s in samples) or len(set(s[2] for s in samples))!=1):
             raise gcmd.error('DEEP CALIBRATION: need at least ten fresh, quiet samples over two seconds')
         self.baseline = dict(t=now,raw=statistics.median(s[1] for s in samples),
-                             generation=samples[-1][2],kind='software_idle_reference_not_board_tare')
+                             generation=samples[-1][2],kind='software_idle_reference_not_board_tare',e=self.last_e)
         if self.active: self._event('baseline',baseline=self.baseline)
         gcmd.respond_info('DEEP CALIBRATION: software reference recorded; no H1/tare sent. Native special commands invalidate it conservatively.')
 

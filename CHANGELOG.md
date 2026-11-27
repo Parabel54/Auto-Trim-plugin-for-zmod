@@ -1,3 +1,8 @@
+# 0.1.0-beta.10.3.13 — the plastic's weight is subtracted (2026-11-27)
+
+- `plastic_weight_g` from the filament fed since the zero (extruder position recorded with every zero) × cross-section × material density; `filtered_grams_nozzle` = force − creep − plastic; `plastic_density` override.
+- 429 software tests +37 subtests pass.
+
 # 0.1.0-beta.10.3.12 — the zero from the tare itself; contact-band vibration (2026-11-26)
 
 - Zero from the load cell's tare reply (board raw reading at the tare; `board_tare`), else the settling window; manual zero still first.

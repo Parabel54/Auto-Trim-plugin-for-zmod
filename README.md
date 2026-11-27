@@ -4,7 +4,7 @@
 
 A first-layer research suite for the Flashforge AD5X running zMod: it records what the printer measures during the first layer, labels it with what you judged by eye, finds the first-layer offset automatically with the load cell, and measures how long the bed takes to settle.
 
-Version 0.1.0-beta.10.3.12 (2026-11-26). **Development continuation of beta 10.3.11.**
+Version 0.1.0-beta.10.3.13 (2026-11-27). **Development continuation of beta 10.3.12.**
 
 ## Contents
 
@@ -188,6 +188,18 @@ Only relative babysteps count (`SET_GCODE_OFFSET Z_ADJUST=`, which is what the s
 **By hand:** `DEEP_CALIBRATION_MARK LABEL=<label> NOTE="..."` during a recording. Labels: `GOOD`, `TOO_HIGH`, `TOO_LOW`, `TRAVEL`, `TRANSITION` and `UNLABELLED`. `DC_MARK_GOOD` is a shortcut for `GOOD`, handy as a screen button. A label you set by hand after the last babystep is kept: the automatic `GOOD` at layer 2 does not replace it.
 
 **What `GOOD` means:** the automatic `GOOD` means "kept until layer 2", not "checked and confirmed". If you did not look at the first layer, it is just the last offset. For analysis, note how the first layer actually came out, and whether layer 2 scraped.
+
+## Beta 10.3.13: the plastic's weight is subtracted
+
+Current continuation: **0.1.0-beta.10.3.13**. Replace the full folder, rerun the installer and reboot while idle.
+
+The load cell weighs the bed, so the plastic laid on it adds to the reading. A 50 mm/s first layer on the AD5X fed 1920 mm of 1.75 mm PLA: 5.7 g, about 0.35 g per minute, against a force rise of about 52 g on that print (the rest of the rise starts at the tare and varies from print to print).
+
+- **Every zero records the extruder position** (from non-extruding readings, before any plastic is laid). Each reading then has `plastic_weight_g` = filament fed since the zero (retractions net out) × filament cross-section (the recipe's `FILAMENT`) × density.
+- **Density** from the recipe's material: PLA 1.24, PETG/PET 1.27, ABS and HIPS 1.04, ASA 1.07, TPU 1.21, PA 1.14, PC 1.20, PVA 1.23 g/cm³ (1.24 if unknown), or `plastic_density` in the config.
+- **`filtered_grams_nozzle`** = force − creep correction − plastic weight: the best estimate of the nozzle's own push.
+
+Software tests: 429 pass with 37 subtests (6 new).
 
 ## Beta 10.3.12: the zero from the tare itself; contact-band vibration
 
